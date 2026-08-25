@@ -1,0 +1,18 @@
+{
+  "auc": 0.7479,
+  "n_filas": 5000,
+  "n_prueba": 1000,
+  "prevalencia": 0.2066,
+  "coeficientes": {
+    "edad": 0.036,
+    "bmi": 0.058,
+    "hipertension": 0.7338,
+    "colesterol_alto": 0.57,
+    "actividad_fisica": -0.6621,
+    "fumador": 0.6218,
+    "salud_general": 0.2519
+  },
+  "datos": "SINTETICOS tipo-BRFSS (demo) - no son datos reales BRFSS",
+  "modelo": "Regresion logistica",
+  "fecha_entrenamiento": "2026-08-24T21:22:06"
+}

@@ -1,0 +1,25 @@
+{
+  "fuente": "C:\\Users\\RANGE\\AppData\\Local\\Temp\\opencode\\datos-bogota\\nuse_llamadas.csv",
+  "generado": "2026-08-24T21:17:06",
+  "codificacion": "utf-8-sig",
+  "nota_codificacion": "Codificacion verificada UTF-8 con BOM; los acentos espanoles estan intactos (no se detectaron caracteres de reemplazo U+FFFD). Los artefactos visibles al inspeccionar el CSV en consolas Windows son de presentacion, no de datos.",
+  "periodo": {
+    "anio_min": 2015,
+    "anio_max": 2026,
+    "meses_anio_completo": 138
+  },
+  "filas_leidas": 1082905,
+  "reglas_filtro": {
+    "excluidos": [
+      "-",
+      "99"
+    ],
+    "nota": "Codigos '99'/'-' = SIN LOCALIZACION, excluidos de los agregados. Sumapaz ('20') se conserva aunque aporta pocos incidentes."
+  },
+  "normalizacion": "peligro_0_100: reescalado min-max 0-100 de total_incidentes sobre las localidades validas (proporcion de densidad, no calibrado).",
+  "puntos_muestra": {
+    "total": 5000,
+    "semilla": 20260225,
+    "nota": "Puntos sinteticos generados con distribucion proporcional a los incidentes reales por localidad. Reemplazables por incidentes reales con coordenadas en una fase posterior."
+  }
+}
