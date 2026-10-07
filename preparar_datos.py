@@ -1,40 +1,39 @@
-"""Offline preparation of aggregated data for the RIESGO INTEGRAL MVP.
+"""Offline preparation of aggregated data for the Sentinel MVP.
 
-Reads the raw NUSE (linea 123, Bogota) incident CSV and produces lightweight
-aggregated artifacts inside prototipo/data/:
+Focus: probability map of emergency incidents (NUSE, Linea 123, Bogota),
+aggregated by UPZ (Unidad de Planeamiento Zonal).
 
-  - nuse_por_localidad.csv : incidents per localidad (total, share, 0-100 hazard)
-  - nuse_por_anio.csv      : incidents per localidad and year (long format)
-  - nuse_top_tipos.csv     : top incident detail types (count)
-  - puntos_muestra.csv     : seeded synthetic points whose distribution follows
-                             the real per-localidad weights (for the heatmap)
-  - proveniencia.json      : provenance note (source, filter rules, date)
+Reads the raw NUSE CSV and the UPZ GeoJSON, and produces lightweight
+artifacts inside data/:
+
+  - upz_probabilidad.csv : incidents per UPZ (total, share %, 0-100 index)
+  - upz_por_anio.csv     : incidents per UPZ per year (+ within-year share)
+  - upz_por_tipo.csv     : incidents per UPZ per detail type
+  - nuse_por_anio.csv    : total incidents per year (trend)
+  - upz_geo.geojson      : UPZ polygons (deduped, UPZ only)
+  - proveniencia.json    : provenance note (source, filters, date)
 
 Usage:
-    python preparar_datos.py [ruta_del_csv_crudo]
-If no path is given, the documented default locations are tried.
+    python preparar_datos.py [ruta_csv_crudo] [ruta_geojson]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import math
+import re
 import sys
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# ----------------------------------------------------------------------------
-# Constants
-# ----------------------------------------------------------------------------
-
-RUTA_CSV_DEFAULT = (
-    r"C:\Users\RANGE\AppData\Local\Temp\opencode\datos-bogota\nuse_llamadas.csv"
-)
-
+RAIZ_PROYECTO = Path(__file__).resolve().parents[1]  # Programacion-IA.Proyecto/
+RUTA_CSV_DEFAULT = RAIZ_PROYECTO / "datos" / "nuse_llamadas.csv"
+RUTA_GEOJSON_DEFAULT = RAIZ_PROYECTO / "datos" / "upz.geojson"
+RUTA_LOCALIDAD_DEFAULT = RAIZ_PROYECTO / "datos" / "localidad.geojson"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 COLUMNAS_REQUERIDAS = [
@@ -42,230 +41,218 @@ COLUMNAS_REQUERIDAS = [
     "COD_LOCALIDAD", "LOCALIDAD", "COD_UPZ", "UPZ", "CANT_INCIDENTES",
 ]
 
-CODIGOS_NO_LOCALIZADOS = {"99", "-"}  # SIN LOCALIZACION / junk codes (excluded)
-
-# Approximate geographic centroids per localidad (used only to place the
-# synthetic sample points inside Bogota; real point incidents arrive later).
-CENTROIDES_LOCALIDAD = {
-    "01": (4.753, -74.031), "02": (4.649, -74.052), "03": (4.603, -74.065),
-    "04": (4.578, -74.062), "05": (4.474, -74.124), "06": (4.610, -74.119),
-    "07": (4.621, -74.179), "08": (4.638, -74.155), "09": (4.674, -74.144),
-    "10": (4.700, -74.104), "11": (4.750, -74.085), "12": (4.670, -74.073),
-    "13": (4.646, -74.094), "14": (4.609, -74.096), "15": (4.593, -74.109),
-    "16": (4.619, -74.116), "17": (4.592, -74.074), "18": (4.584, -74.113),
-    "19": (4.578, -74.159), "20": (4.460, -74.230),
-}
-
-LIMITES_BOGOTA = {"lat_min": 4.45, "lat_max": 4.90, "lon_min": -74.25, "lon_max": -73.95}
-N_PUNTOS_MUESTRA = 5000
-SEMILLA = 20260225
+CODIGOS_NO_LOCALIZADOS_LOC = {"99", "-"}
+CODIGO_UPZ_SIN_LOC = "UPZ999"
 
 
-# ----------------------------------------------------------------------------
-# Encoding / reading helpers
-# ----------------------------------------------------------------------------
-
-def detectar_codificacion(ruta: Path) -> str:
-    """Return an encoding that decodes the whole file, utf-8-sig first."""
-    with open(ruta, "rb") as fh:
-        raw = fh.read(200_000)
-    for enc in ("utf-8-sig", "latin-1"):
-        try:
-            raw.decode(enc)
-            return enc
-        except UnicodeDecodeError:
-            continue
-    return "latin-1"
-
-
-def s(texto: str | None) -> str:
-    """Sanitize a text cell: strip quotes, collapse replacement chars, strip."""
+def _norm(texto: str | None) -> str:
     if texto is None:
         return ""
-    texto = texto.strip().strip('"')
-    # Source export replaced some accented chars with U+FFFD; collapse them.
-    texto = texto.replace("\ufffd", "")
+    texto = str(texto).strip().strip('"').replace("\ufffd", "")
     return " ".join(texto.split())
 
 
+def leer_geojson_codigos(ruta: Path) -> set[str]:
+    """UPZ codes present in the GeoJSON (deduped, UPZ only)."""
+    gj = json.loads(ruta.read_text(encoding="utf-8"))
+    codigos = set()
+    for f in gj.get("features", []):
+        cod = _norm(f["properties"].get("COD_UPZ")).upper()
+        if cod.startswith("UPZ"):
+            codigos.add(cod)
+    return codigos
+
+
+def limpiar_geojson(ruta: Path, destino: Path) -> int:
+    """Write a deduped UPZ-only GeoJSON, reprojected to WGS84 lon/lat.
+
+    The source GeoJSON is in EPSG:3857 (Web Mercator, meters); Folium/Leaflet
+    needs EPSG:4326 (lon, lat).
+    """
+    R = 6378137.0
+
+    def a_lonlat(easting: float, northing: float) -> list[float]:
+        lon = math.degrees(easting / R)
+        lat = math.degrees(2 * math.atan(math.exp(northing / R)) - math.pi / 2)
+        return [round(lon, 6), round(lat, 6)]
+
+    def reproyectar_ring(ring):
+        return [a_lonlat(x, y) for x, y in ring]
+
+    def reproyectar_geom(g):
+        if g["type"] == "Polygon":
+            return {"type": "Polygon", "coordinates": [reproyectar_ring(r) for r in g["coordinates"]]}
+        if g["type"] == "MultiPolygon":
+            return {"type": "MultiPolygon",
+                    "coordinates": [[reproyectar_ring(r) for r in poly] for poly in g["coordinates"]]}
+        return g
+
+    gj = json.loads(ruta.read_text(encoding="utf-8"))
+    vistos, features = set(), []
+    for f in gj.get("features", []):
+        p = f["properties"]
+        cod = _norm(p.get("COD_UPZ")).upper()
+        if not cod.startswith("UPZ") or cod in vistos:
+            continue
+        vistos.add(cod)
+        features.append({
+            "type": "Feature",
+            "properties": {"cod_upz": cod, "nombre_upz": _norm(p.get("NOMBRE_UPZ"))},
+            "geometry": reproyectar_geom(f["geometry"]),
+        })
+    destino.write_text(
+        json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return len(features)
+
+
+def preparar_localidades(ruta: Path, destino: Path) -> int:
+    """Convert the Esri-JSON localidad boundaries (already lon/lat) to GeoJSON."""
+    data = json.loads(ruta.read_text(encoding="utf-8"))
+    features = []
+    for f in data.get("features", []):
+        attrs = f.get("attributes", {})
+        rings = (f.get("geometry") or {}).get("rings")
+        if not rings:
+            continue
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "localidad": _norm(attrs.get("LocNombre")),
+                "cod_localidad": str(attrs.get("LocCodigo", "")).strip(),
+            },
+            "geometry": {"type": "MultiPolygon",
+                         "coordinates": [[[[x, y] for x, y in ring]] for ring in rings]},
+        })
+    destino.write_text(
+        json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return len(features)
+
+
 def leer_csv(ruta: Path) -> pd.DataFrame:
-    print(f"[preparar_datos] leyendo {ruta}")
-    print(f"[preparar_datos] tamano del archivo: {ruta.stat().st_size / 1e6:.1f} MB")
-    enc = detectar_codificacion(ruta)
-    print(f"[preparar_datos] codificacion detectada: {enc}")
-    df = pd.read_csv(ruta, sep=";", encoding=enc, dtype=str, keep_default_na=False)
-    cols = [c for c in df.columns]
-    df.columns = [s(c) for c in df.columns]
+    print(f"[preparar_datos] leyendo {ruta} ({ruta.stat().st_size / 1e6:.1f} MB)")
+    df = pd.read_csv(ruta, sep=";", encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    df.columns = [_norm(c) for c in df.columns]
     if list(df.columns) != COLUMNAS_REQUERIDAS:
-        raise ValueError(
-            "Columnas inesperadas en el CSV crudo.\n"
-            f"Esperadas: {COLUMNAS_REQUERIDAS}\n"
-            f"Encontradas: {list(df.columns)}"
-        )
-    print(f"[preparar_datos] filas leidas: {len(df):,}")
-    for col in ("LOCALIDAD", "TIPO_INCIDENTE", "TIPO_DETALLE", "UPZ"):
-        df[col] = df[col].map(s)
-    df["COD_LOCALIDAD"] = df["COD_LOCALIDAD"].map(s)
+        raise ValueError(f"Columnas inesperadas: {list(df.columns)}")
+    for col in ("LOCALIDAD", "TIPO_DETALLE", "UPZ"):
+        df[col] = df[col].map(_norm)
+    df["COD_UPZ"] = df["COD_UPZ"].map(lambda x: _norm(x).upper())
+    df["COD_LOCALIDAD"] = df["COD_LOCALIDAD"].map(lambda x: _norm(x).upper())
     df["CANT_INCIDENTES"] = pd.to_numeric(df["CANT_INCIDENTES"], errors="coerce").fillna(0).astype(int)
     df["ANIO"] = pd.to_numeric(df["ANIO"], errors="coerce").fillna(0).astype(int)
+    df["MES"] = pd.to_numeric(df["MES"], errors="coerce").fillna(0).astype(int)
+    print(f"[preparar_datos] filas leidas: {len(df):,}")
     return df
 
 
-# ----------------------------------------------------------------------------
-# Aggregations
-# ----------------------------------------------------------------------------
-
-def localidades_validas(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter out SIN LOCALIZACION / junk codes. Sumapaz ('20') is kept."""
-    n_total = len(df)
-    df = df[~df["COD_LOCALIDAD"].isin(CODIGOS_NO_LOCALIZADOS)]
-    n_ok = len(df)
-    print(f"[preparar_datos] filas excluidas por COD_LOCALIDAD en {sorted(CODIGOS_NO_LOCALIZADOS)}: {n_total - n_ok:,}")
+def filtrar(df: pd.DataFrame, codigos_upz: set[str]) -> pd.DataFrame:
+    n0 = len(df)
+    df = df[~df["COD_LOCALIDAD"].isin(CODIGOS_NO_LOCALIZADOS_LOC)]
+    df = df[df["COD_UPZ"].isin(codigos_upz)]
+    print(f"[preparar_datos] filas excluidas (sin localizacion / UPZ no valida): {n0 - len(df):,}")
     return df.copy()
 
 
-def resumen_por_localidad(df: pd.DataFrame) -> pd.DataFrame:
-    agg = (df.groupby(["COD_LOCALIDAD", "LOCALIDAD"], as_index=False)["CANT_INCIDENTES"].sum())
-    agg = agg.sort_values("CANT_INCIDENTES", ascending=False).reset_index(drop=True)
-    total = agg["CANT_INCIDENTES"].sum()
-    agg["proporcion"] = (agg["CANT_INCIDENTES"] / total).round(6)
-    mx, mn = agg["CANT_INCIDENTES"].max(), agg["CANT_INCIDENTES"].min()
-    rango = mx - mn if mx > mn else 1.0
-    agg["peligro_0_100"] = ((agg["CANT_INCIDENTES"] - mn) / rango * 100).round(1)
-    agg = agg.rename(columns={"CANT_INCIDENTES": "total_incidentes"})
-    return agg
+def indice_0_100(serie: pd.Series) -> pd.Series:
+    mn, mx = serie.min(), serie.max()
+    if mx == mn:
+        return serie * 0.0
+    return ((serie - mn) / (mx - mn) * 100).round(2)
 
 
-def resumen_por_anio(df: pd.DataFrame) -> pd.DataFrame:
-    agg = (df.groupby(["ANIO", "COD_LOCALIDAD", "LOCALIDAD"], as_index=False)["CANT_INCIDENTES"].sum())
-    agg = agg.rename(columns={"CANT_INCIDENTES": "total_incidentes"})
-    return agg.sort_values(["ANIO", "total_incidentes"], ascending=[True, False])
+def generar(ruta_csv=None, ruta_geojson=None) -> dict:
+    ruta_csv = Path(ruta_csv) if ruta_csv else RUTA_CSV_DEFAULT
+    ruta_geojson = Path(ruta_geojson) if ruta_geojson else RUTA_GEOJSON_DEFAULT
+    if not ruta_csv.exists():
+        raise FileNotFoundError(f"No se encontro el CSV crudo: {ruta_csv}")
+    if not ruta_geojson.exists():
+        raise FileNotFoundError(f"No se encontro el GeoJSON de UPZ: {ruta_geojson}")
 
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-def top_tipos(df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
-    agg = (df.groupby("TIPO_DETALLE", as_index=False)["CANT_INCIDENTES"].sum())
-    agg["TIPO_DETALLE"] = agg["TIPO_DETALLE"].map(s)
-    agg = (agg.groupby("TIPO_DETALLE", as_index=False)["CANT_INCIDENTES"].sum())
-    agg = agg.sort_values("CANT_INCIDENTES", ascending=False).head(n)
-    return agg.rename(columns={"CANT_INCIDENTES": "total_incidentes"}).reset_index(drop=True)
+    codigos_upz = leer_geojson_codigos(ruta_geojson)
+    print(f"[preparar_datos] UPZ en el GeoJSON: {len(codigos_upz)}")
 
+    df = filtrar(leer_csv(ruta_csv), codigos_upz)
 
-# ----------------------------------------------------------------------------
-# Synthetic sample points (prototype heatmap)
-# ----------------------------------------------------------------------------
+    total = int(df["CANT_INCIDENTES"].sum())
 
-def generar_puntos_muestra(resumen: pd.DataFrame) -> pd.DataFrame:
-    """Seeded synthetic points, per-localidad counts proportional to the real
-    distribution, jittered around localidad centroids inside Bogota bounds."""
-    rng = np.random.default_rng(SEMILLA)
-    resumen = resumen[resumen["COD_LOCALIDAD"].isin(CENTROIDES_LOCALIDAD)]
-    pesos = resumen["total_incidentes"].values
-    pesos = pesos / pesos.sum()
-    conteos = (pesos * N_PUNTOS_MUESTRA).astype(int)
-    remanente = N_PUNTOS_MUESTRA - int(conteos.sum())
-    if remanente > 0:
-        idx = rng.choice(len(conteos), size=remanente, p=pesos)
-        for i in idx:
-            conteos[i] += 1
+    # Por UPZ (total del periodo). Se agrupa solo por codigo: algunos codigos
+    # traen variantes de nombre/localidad en el crudo (se toma la mas frecuente).
+    def _moda(serie: pd.Series) -> str:
+        m = serie.mode()
+        return m.iat[0] if len(m) else (serie.iloc[0] if len(serie) else "")
 
-    lats, lons, cods, noms = [], [], [], []
-    for (_, fila), n in zip(resumen.iterrows(), conteos):
-        cod, nom = fila["COD_LOCALIDAD"], fila["LOCALIDAD"]
-        lat_c, lon_c = CENTROIDES_LOCALIDAD[cod]
-        sigma = 0.0045
-        lat = lat_c + rng.normal(0, sigma, n)
-        lon = lon_c + rng.normal(0, sigma, n)
-        lat = np.clip(lat, LIMITES_BOGOTA["lat_min"], LIMITES_BOGOTA["lat_max"])
-        lon = np.clip(lon, LIMITES_BOGOTA["lon_min"], LIMITES_BOGOTA["lon_max"])
-        lats.extend(lat); lons.extend(lon); cods.extend([cod] * n); noms.extend([nom] * n)
+    upz = (df.groupby("COD_UPZ", as_index=False)
+             .agg(total_incidentes=("CANT_INCIDENTES", "sum"),
+                  nombre_upz=("UPZ", _moda),
+                  localidad=("LOCALIDAD", _moda)))
+    upz["prob_pct"] = (upz["total_incidentes"] / total * 100).round(4)
+    upz["indice_0_100"] = indice_0_100(upz["total_incidentes"])
+    upz = upz.sort_values("total_incidentes", ascending=False).reset_index(drop=True)
 
-    pts = pd.DataFrame({"lat": lats, "lon": lons, "cod_localidad": cods, "localidad": noms})
-    pts["clase"] = "muestra_sintetica"
-    return pts
+    # Tabla de hechos MENSUAL: UPZ x anio x mes x tipo (timeline + filtro de tipo)
+    hechos = (df.groupby(["COD_UPZ", "ANIO", "MES", "TIPO_DETALLE"], as_index=False)["CANT_INCIDENTES"].sum()
+                .rename(columns={"CANT_INCIDENTES": "total_incidentes"}))
+    hechos["MES"] = hechos["MES"].astype(int)
 
+    # Totales por anio y por mes (tendencia)
+    por_anio_total = (df.groupby("ANIO", as_index=False)["CANT_INCIDENTES"].sum()
+                        .rename(columns={"CANT_INCIDENTES": "total_incidentes"})
+                        .sort_values("ANIO"))
+    por_anio_total["prob_pct"] = (por_anio_total["total_incidentes"] / total * 100).round(4)
+    por_mes_total = (df.groupby(["ANIO", "MES"], as_index=False)["CANT_INCIDENTES"].sum()
+                       .rename(columns={"CANT_INCIDENTES": "total_incidentes"})
+                       .sort_values(["ANIO", "MES"]))
 
-# ----------------------------------------------------------------------------
-# Write outputs
-# ----------------------------------------------------------------------------
-
-def escribir(archivo: Path, df: pd.DataFrame):
-    df.to_csv(archivo, index=False, encoding="utf-8-sig")
-    print(f"[preparar_datos] escrito {archivo.name} ({len(df):,} filas)")
-
-
-def generar(ruta_csv: str | os.PathLike | None = None, salida: os.PathLike | None = None) -> dict:
-    """Full pipeline. Returns a summary dict usable for provenance."""
-    ruta = Path(ruta_csv) if ruta_csv else RUTA_CSV_DEFAULT
-    if not Path(ruta).exists():
-        raise FileNotFoundError(f"No se encontro el CSV crudo: {ruta}")
-
-    out = Path(salida) if salida else DATA_DIR
-    out.mkdir(parents=True, exist_ok=True)
-
-    df = leer_csv(Path(ruta))
-    df = localidades_validas(df)
-    enc_usada = detectar_codificacion(Path(ruta))
-
-    resumen = resumen_por_localidad(df)
-    por_anio = resumen_por_anio(df)
-    tipos = top_tipos(df)
-    puntos = generar_puntos_muestra(resumen)
-
-    escribir(out / "nuse_por_localidad.csv", resumen)
-    escribir(out / "nuse_por_anio.csv", por_anio)
-    escribir(out / "nuse_top_tipos.csv", tipos)
-    escribir(out / "puntos_muestra.csv", puntos)
+    upz.to_csv(DATA_DIR / "upz_probabilidad.csv", index=False, encoding="utf-8-sig")
+    hechos.to_csv(DATA_DIR / "upz_anio_mes_tipo.csv.gz", index=False, encoding="utf-8-sig", compression="gzip")
+    por_anio_total.to_csv(DATA_DIR / "nuse_por_anio.csv", index=False, encoding="utf-8-sig")
+    por_mes_total.to_csv(DATA_DIR / "nuse_por_mes.csv", index=False, encoding="utf-8-sig")
+    n_geo = limpiar_geojson(ruta_geojson, DATA_DIR / "upz_geo.geojson")
+    n_loc = 0
+    if RUTA_LOCALIDAD_DEFAULT.exists():
+        n_loc = preparar_localidades(RUTA_LOCALIDAD_DEFAULT, DATA_DIR / "localidad_geo.geojson")
 
     proveniencia = {
-        "fuente": str(Path(ruta)),
+        "fuente_datos": str(ruta_csv),
+        "fuente_geo": str(ruta_geojson),
         "generado": datetime.now().isoformat(timespec="seconds"),
-        "codificacion": enc_usada,
-        "nota_codificacion": (
-            "Codificacion verificada UTF-8 con BOM; los acentos espanoles estan "
-            "intactos (no se detectaron caracteres de reemplazo U+FFFD). Los "
-            "artefactos visibles al inspeccionar el CSV en consolas Windows son "
-            "de presentacion, no de datos."
-        ),
-        "periodo": {
-            "anio_min": int(df["ANIO"].min()),
-            "anio_max": int(df["ANIO"].max()),
-            "meses_anio_completo": int(df.drop_duplicates(["ANIO", "MES"]).shape[0]),
-        },
-        "filas_leidas": len(df),
+        "periodo": {"anio_min": int(df["ANIO"].min()), "anio_max": int(df["ANIO"].max())},
+        "filas_leidas": int(len(df)),
+        "total_incidentes": total,
+        "upz_con_datos": int(len(upz)),
+        "upz_en_geojson": n_geo,
         "reglas_filtro": {
-            "excluidos": sorted(CODIGOS_NO_LOCALIZADOS),
-            "nota": "Codigos '99'/'-' = SIN LOCALIZACION, excluidos de los agregados. "
-                    "Sumapaz ('20') se conserva aunque aporta pocos incidentes.",
+            "excluidos_localidad": sorted(CODIGOS_NO_LOCALIZADOS_LOC),
+            "excluidos_upz": [CODIGO_UPZ_SIN_LOC, "UPZ990-996", "UPR*"],
+            "nota": "Se conservan solo UPZ presentes en el GeoJSON oficial. Sin localizacion/UPZ especiales se excluyen.",
         },
-        "normalizacion": "peligro_0_100: reescalado min-max 0-100 de total_incidentes "
-                         "sobre las localidades validas (proporcion de densidad, no calibrado).",
-        "puntos_muestra": {
-            "total": int(len(puntos)),
-            "semilla": SEMILLA,
-            "nota": "Puntos sinteticos generados con distribucion proporcional a los "
-                    "incidentes reales por localidad. Reemplazables por incidentes "
-                    "reales con coordenadas en una fase posterior.",
-        },
+        "probabilidad": "prob_pct = participacion de la UPZ en el total del periodo (probabilidad empirica de incidencia). indice_0_100 = min-max para color.",
     }
-    with open(out / "proveniencia.json", "w", encoding="utf-8") as fh:
-        json.dump(proveniencia, fh, ensure_ascii=False, indent=2)
-    print(f"[preparar_datos] escrito {out / 'proveniencia.json'}")
+    (DATA_DIR / "proveniencia.json").write_text(
+        json.dumps(proveniencia, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n[preparar_datos] RESUMEN")
-    print(f"  Localidades con datos: {len(resumen)}")
-    print(f"  Periodo cubierto      : {proveniencia['periodo']['anio_min']}-{proveniencia['periodo']['anio_max']}")
-    print(f"  Total incidentes      : {int(resumen['total_incidentes'].sum()):,}")
-    print(resumen[["COD_LOCALIDAD", "LOCALIDAD", "total_incidentes", "peligro_0_100"]].head(8).to_string(index=False))
+    print(f"  Periodo        : {proveniencia['periodo']['anio_min']}-{proveniencia['periodo']['anio_max']}")
+    print(f"  Total incidentes: {total:,}")
+    print(f"  UPZ con datos  : {len(upz)}")
+    print(upz[["COD_UPZ", "nombre_upz", "localidad", "total_incidentes", "prob_pct"]].head(8).to_string(index=False))
     print("[preparar_datos] finalizado OK")
     return proveniencia
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Genera los datos agregados del prototipo RIESGO INTEGRAL.")
-    parser.add_argument("csv", nargs="?", default=None, help="Ruta del CSV crudo de NUSE")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Genera los agregados por UPZ del MVP Sentinel.")
+    ap.add_argument("csv", nargs="?", default=None)
+    ap.add_argument("geojson", nargs="?", default=None)
+    args = ap.parse_args()
     try:
-        generar(args.csv)
+        generar(args.csv, args.geojson)
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"[preparar_datos] ERROR: {exc}", file=sys.stderr)

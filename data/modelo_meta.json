@@ -1,0 +1,42 @@
+{
+  "modelo": "gbm",
+  "features": [
+    "lag1",
+    "lag12",
+    "lag13",
+    "ma3",
+    "ma12",
+    "MES",
+    "ANIO"
+  ],
+  "metricas": {
+    "baseline_lag1": {
+      "mae": 231.94,
+      "rmse": 381.66,
+      "share_mae_pct": 0.0051
+    },
+    "baseline_blend": {
+      "mae": 191.28,
+      "rmse": 297.4,
+      "share_mae_pct": 0.004
+    },
+    "gbm": {
+      "mae": 185.74,
+      "rmse": 279.15,
+      "share_mae_pct": 0.004
+    }
+  },
+  "mejora_vs_baseline_pct": 19.92,
+  "importancias": {
+    "lag1": 0.5695,
+    "lag12": 0.1314,
+    "lag13": 0.0033,
+    "ma3": 0.2791,
+    "ma12": 0.0015,
+    "MES": 0.01,
+    "ANIO": 0.0053
+  },
+  "train": "hasta 2023-12",
+  "test": "2024-01 .. 2025-12",
+  "nota": "Split temporal mensual (sin fuga de futuro)."
+}

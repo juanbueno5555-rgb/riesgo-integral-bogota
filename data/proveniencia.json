@@ -1,25 +1,26 @@
 {
-  "fuente": "C:\\Users\\RANGE\\AppData\\Local\\Temp\\opencode\\datos-bogota\\nuse_llamadas.csv",
-  "generado": "2026-08-24T21:17:06",
-  "codificacion": "utf-8-sig",
-  "nota_codificacion": "Codificacion verificada UTF-8 con BOM; los acentos espanoles estan intactos (no se detectaron caracteres de reemplazo U+FFFD). Los artefactos visibles al inspeccionar el CSV en consolas Windows son de presentacion, no de datos.",
+  "fuente_datos": "C:\\Users\\RANGE\\Downloads\\Programacion-IA.Proyecto\\datos\\nuse_llamadas.csv",
+  "fuente_geo": "C:\\Users\\RANGE\\Downloads\\Programacion-IA.Proyecto\\datos\\upz.geojson",
+  "generado": "2026-10-07T15:52:07",
   "periodo": {
     "anio_min": 2015,
-    "anio_max": 2026,
-    "meses_anio_completo": 138
+    "anio_max": 2026
   },
-  "filas_leidas": 1082905,
+  "filas_leidas": 971993,
+  "total_incidentes": 30118061,
+  "upz_con_datos": 112,
+  "upz_en_geojson": 112,
   "reglas_filtro": {
-    "excluidos": [
+    "excluidos_localidad": [
       "-",
       "99"
     ],
-    "nota": "Codigos '99'/'-' = SIN LOCALIZACION, excluidos de los agregados. Sumapaz ('20') se conserva aunque aporta pocos incidentes."
+    "excluidos_upz": [
+      "UPZ999",
+      "UPZ990-996",
+      "UPR*"
+    ],
+    "nota": "Se conservan solo UPZ presentes en el GeoJSON oficial. Sin localizacion/UPZ especiales se excluyen."
   },
-  "normalizacion": "peligro_0_100: reescalado min-max 0-100 de total_incidentes sobre las localidades validas (proporcion de densidad, no calibrado).",
-  "puntos_muestra": {
-    "total": 5000,
-    "semilla": 20260225,
-    "nota": "Puntos sinteticos generados con distribucion proporcional a los incidentes reales por localidad. Reemplazables por incidentes reales con coordenadas en una fase posterior."
-  }
+  "probabilidad": "prob_pct = participacion de la UPZ en el total del periodo (probabilidad empirica de incidencia). indice_0_100 = min-max para color."
 }

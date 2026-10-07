@@ -1,61 +1,83 @@
-"""RIESGO INTEGRAL · Bogotá — Streamlit MVP (PTIA, Escuela Colombiana de Ingeniería).
+"""Sentinel · Mapa de probabilidad de incidentes — Bogotá (Streamlit MVP).
 
-Score integral = Peligro (territorio, NUSE linea 123) × Exposicion (perfil de
-estilo de vida, modelo demo) bajo el marco ISO 31000.
+Proyecto académico PTIA (Escuela Colombiana de Ingeniería, Ingeniería de Sistemas).
 
-This is an academic prototype: data are historical aggregates plus synthetic
-sample points, the health model is a DEMO trained on synthetic data, and the
-calibration of the combined score is a placeholder until the methodological
-design phase (Hito 2).
+A partir de los incidentes reales reportados a la Línea 123 (NUSE, 2015-2026),
+agregados por UPZ, el sistema muestra una superficie de PROBABILIDAD por UPZ con
+dos vistas:
+
+  - Histórico : frecuencia relativa empírica del periodo seleccionado.
+  - Predicho  : estimación del modelo supervisado (GBM mensual) para el último
+                mes del periodo seleccionado.
+
+La probabilidad es relativa al histórico/predicción; no es una probabilidad
+calibrada ni causal.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import branca.colormap as cm
 import folium
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from folium.plugins import HeatMap
-from sklearn.cluster import KMeans
 
 import data_nuse
-import integracion
-import modelo_riesgo
+import mapa
+import modelo
 
-# Brand palette -----------------------------------------------------------------
 NAVY = "#1F3864"
 BLUE = "#2E75B6"
 ACENTO = "#C55A11"
 ALERTA = "#C00000"
 FONDO = "#000000"
-OK = "#2E7D32"
 
 RAIZ = Path(__file__).resolve().parent
 
-st.set_page_config(
-    page_title="RIESGO INTEGRAL · Bogotá",
-    page_icon=":material/health_and_safety:",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+
+# ---------------------------------------------------------------------------
+# Cached data access
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def _superficie_historica(desde: tuple[int, int], hasta: tuple[int, int], tipo: str | None):
+    return mapa.superficie_historica(desde, hasta, tipo)
 
 
-# -------------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def _superficie_predicha(anio: int, mes: int):
+    return mapa.superficie_predicha(anio, mes)
+
+
+@st.cache_data(show_spinner=False)
+def _geojson_base() -> dict:
+    return data_nuse.cargar_geojson()
+
+
+@st.cache_data(show_spinner=False)
+def _localidad_base() -> dict:
+    return data_nuse.cargar_localidad_geo()
+
+
+@st.cache_data(show_spinner=False)
+def _siniestros() -> pd.DataFrame:
+    return data_nuse.cargar_siniestros()
+
+
+# ---------------------------------------------------------------------------
 # UI helpers
-# -------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def estilo_global() -> None:
     st.markdown(
         f"""
         <style>
-        :root {{
-            --navy: {NAVY}; --blue: {BLUE}; --acento: {ACENTO};
-        }}
         .stApp {{ background-color: {FONDO}; }}
         h1, h2, h3 {{ color: #FFFFFF; }}
-        p, li {{ color: #FFFFFF; }}
+        p, li, label {{ color: #FFFFFF; }}
         .hero {{ padding: 0.4rem 0 0.2rem 0; }}
         .badge {{
             display: inline-block; background: {BLUE}; color: #FFFFFF;
@@ -67,441 +89,306 @@ def estilo_global() -> None:
             color: #FFFFFF; padding: 0.65rem 0.85rem; border-radius: 6px;
             font-size: 0.9rem; margin: 0.6rem 0;
         }}
-        .alerta {{
-            background: #2A1010; border-left: 4px solid {ALERTA};
-            color: #FFFFFF; padding: 0.65rem 0.85rem; border-radius: 6px;
-            font-size: 0.9rem; margin: 0.6rem 0;
-        }}
-        .barra {{ margin: 0.5rem 0; }}
-        .barra .fila {{
-            display: flex; justify-content: space-between;
-            font-size: 0.88rem; font-weight: 600; color: #FFFFFF;
-        }}
-        .barra .pista {{
-            background: #2A2A2A; border-radius: 8px; height: 14px; overflow: hidden;
-        }}
-        .barra .relleno {{ height: 100%; border-radius: 8px; }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def barra(etiqueta: str, valor: float, color: str) -> str:
-    valor = min(100.0, max(0.0, float(valor)))
-    return (
-        f'<div class="barra">'
-        f'  <div class="fila"><span>{etiqueta}</span><span>{valor:.1f} / 100</span></div>'
-        f'  <div class="pista"><div class="relleno" style="width:{valor:.1f}%;'
-        f'background:{color};"></div></div>'
-        f"</div>"
-    )
-
-
 def inyectar_logo() -> None:
     ruta = RAIZ / "assets" / "logo.svg"
-    if not ruta.exists():
-        return
-    svg = ruta.read_text(encoding="utf-8")
-    st.markdown(
-        f'<div style="text-align:center;padding:0.2rem 0;">{svg}</div>',
-        unsafe_allow_html=True,
-    )
+    if ruta.exists():
+        st.markdown(f'<div style="text-align:center;padding:0.2rem 0;">{ruta.read_text(encoding="utf-8")}</div>',
+                    unsafe_allow_html=True)
 
-
-def cargar_datos_seguro() -> bool:
-    try:
-        data_nuse._asegurar_datos()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"No se pudieron cargar los datos agregados: {exc}")
-        return False
-
-
-# -------------------------------------------------------------------------------
-# Sidebar
-# -------------------------------------------------------------------------------
 
 def sidebar() -> None:
     with st.sidebar:
         inyectar_logo()
         st.markdown("---")
+        st.subheader("Avisos")
         st.markdown(
-            f'<div style="color:#FFFFFF;font-weight:700;font-size:0.95rem;">Marca demo</div>'
-            '<div style="color:#BBBBBB;font-size:0.82rem;">Paleta: azul marino '
-            f'<span style="color:{NAVY};">●</span> azul corporativo '
-            f'<span style="color:{BLUE};">●</span> acento cálido '
-            f'<span style="color:{ACENTO};">●</span> alerta '
-            f'<span style="color:{ALERTA};">●</span></div>',
-            unsafe_allow_html=True,
-        )
+            '<div class="nota"><b>Datos reales:</b> incidentes reportados a la Línea 123 '
+            "(NUSE, Bogotá) 2015-2026, agregados por UPZ. Fuente: Datos Abiertos Bogotá (SDSCJ).</div>",
+            unsafe_allow_html=True)
+        st.markdown(
+            '<div class="nota"><b>Probabilidad:</b> en modo Histórico es la frecuencia relativa '
+            "empírica del periodo; en modo Predicho es la estimación del modelo. No es calibrada ni causal.</div>",
+            unsafe_allow_html=True)
+        metrics = modelo.metricas_guardadas()
+        if metrics:
+            st.markdown("---")
+            st.subheader("Modelo")
+            mm = metrics["metricas"]
+            st.caption(
+                f"GBM mensual · MAE test **{mm['gbm']['mae']:,.0f}** vs baseline "
+                f"{mm['baseline_lag1']['mae']:,.0f} (-{metrics['mejora_vs_baseline_pct']}%)"
+            )
+            if metrics.get("importancias"):
+                st.caption("Importancia de features:")
+                for k, v in sorted(metrics["importancias"].items(), key=lambda x: -x[1])[:4]:
+                    st.caption(f"· {k}: {v}")
         st.markdown("---")
-        st.subheader("Avisos importantes")
-        st.markdown(
-            f'<div class="nota"><b>Datos de incidentes (Módulo A):</b> agregados históricos '
-            "de la línea 123 (NUSE) 2015-2026. Los puntos del mapa son una muestra "
-            "sintética con distribución basada en los datos reales; los incidentes "
-            "reales georreferenciados llegarán en una fase posterior.</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="nota"><b>Modelo de salud (Módulo B):</b> demostración entrenada '
-            "sobre datos <b>sintéticos</b> tipo-BRFSS. El modelo real sobre BRFSS 2015 "
-            "llegará en una fase posterior.</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="alerta"><b>Calibración del score integral:</b> {integracion.NOTA_CALIBRACION}</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("---")
-        st.caption("Proyecto académico PTIA · Escuela Colombiana de Ingeniería · Ingeniería de Sistemas")
-        st.caption("Integrantes: estudiantes (2) · Docente")
+        st.caption("Proyecto académico PTIA · Escuela Colombiana de Ingeniería")
+        st.caption("Derly Valeria Pachón Pinzón · Juan David Rangel Jiménez")
 
 
-# -------------------------------------------------------------------------------
-# Header
-# -------------------------------------------------------------------------------
-
-def header() -> pd.DataFrame | None:
+def header(superficie, periodo_txt: str, modo: str) -> None:
+    prov = data_nuse.cargar_proveniencia()
     col_titulo, col_kpi = st.columns([2, 1])
     with col_titulo:
         st.markdown(
-            '<div class="hero"><span class="badge">PROTOTIPO MVP</span>'
-            '<span class="badge">Riesgo = Peligro × Exposición</span>'
-            '<span class="badge">ISO 31000</span></div>',
-            unsafe_allow_html=True,
-        )
-        st.title("RIESGO INTEGRAL · Bogotá")
-        st.markdown(
-            "Mapa interactivo de peligro territorial (Módulo A) combinado con el "
-            "perfil de estilo de vida (Módulo B) para obtener un score integral."
-        )
-    resumen = data_nuse.cargar_resumen() if cargar_datos_seguro() else None
-    if resumen is not None and not resumen.empty:
-        prov = data_nuse.cargar_proveniencia()
-        periodo = prov["periodo"]
-        metricas_m = modelo_riesgo.metricas_guardadas() or {}
-        auc = metricas_m.get("auc", "—")
-        with col_kpi:
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Localidades", len(resumen))
-            k2.metric("Incidentes", f"{resumen['total_incidentes'].sum():,.0f}")
-            k3.metric("Periodo", f"{periodo['anio_min']}-{periodo['anio_max']}")
-            st.caption(f"AUC del modelo demo (holdout): {auc}")
-    return resumen
+            '<div class="hero"><span class="badge">MVP</span>'
+            f'<span class="badge">{modo}</span>'
+            '<span class="badge">NUSE Línea 123</span></div>',
+            unsafe_allow_html=True)
+        st.title("Sentinel · Mapa de probabilidad de incidentes")
+        st.markdown("Superficie de probabilidad por **UPZ** a partir de datos reales de la Línea 123.")
+    with col_kpi:
+        k1, k2, k3 = st.columns(3)
+        k1.metric("UPZ", len(superficie))
+        k2.metric("Incidentes", f"{int(superficie['total_incidentes'].sum()):,.0f}")
+        k3.metric("Periodo", periodo_txt)
 
 
-# -------------------------------------------------------------------------------
-# Módulo A : Mapa de riesgo territorial
-# -------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
 
-def cargar_clusters(puntos: pd.DataFrame, n: int = 6) -> list[list[float]]:
-    """k-means centers over the GIVEN points (follows the active filter)."""
-    n = min(n, len(puntos))
-    if n < 1:
-        return []
-    kmeans = KMeans(n_clusters=n, random_state=7, n_init=10)
-    kmeans.fit(puntos[["lat", "lon"]].to_numpy())
-    return kmeans.cluster_centers_.tolist()
-
-
-def modulo_mapa(resumen: pd.DataFrame) -> None:
-    st.header("Mapa de riesgo territorial")
-    st.caption(
-        "Peligro del territorio a partir de la densidad histórica de incidentes "
-        "reportados a la línea 123 (NUSE)."
-    )
-
-    try:
-        puntos = data_nuse.cargar_puntos()
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"No se pudieron cargar los puntos de muestra: {exc}")
-        return
-
-    # Filter by localidad CODE (stable), display by name: avoids any
-    # accent/case mismatch between derived files.
-    nombre_a_codigo = dict(zip(resumen["LOCALIDAD"], resumen["COD_LOCALIDAD"]))
-    opciones = ["Todas las localidades"] + list(nombre_a_codigo)
-    filtro = st.selectbox("Filtrar localidad", opciones, index=0)
-
-    df_mapa = puntos
-    if filtro != "Todas las localidades":
-        cod = nombre_a_codigo[filtro]
-        df_mapa = puntos[puntos["cod_localidad"].astype(str) == str(cod)]
-
-    if df_mapa.empty:
-        st.warning(
-            "No hay puntos de muestra para la selección actual (la localidad "
-            "puede tener muy pocos incidentes). Pruebe con otra localidad."
-        )
-        return
-
-    mapa = folium.Map(location=[4.66, -74.10], zoom_start=11, tiles="OpenStreetMap")
-    HeatMap(
-        df_mapa[["lat", "lon"]].values.tolist(),
-        radius=13,
-        blur=16,
-        min_opacity=0.35,
-        gradient={0.0: "#2E75B6", 0.5: "#FFEB3B", 0.75: "#C55A11", 1.0: "#C00000"},
-    ).add_to(mapa)
-
-    # Predicted zones follow the current filter (all points, or the localidad).
-    centros_cluster = cargar_clusters(df_mapa)
-    for lat, lon in centros_cluster:
-        folium.CircleMarker(
-            location=[lat, lon],
-            radius=13,
-            color="#FFFFFF",
-            weight=3,
-            fill=True,
-            fill_color="#C55A11",
-            fill_opacity=0.95,
-            popup="Zona predicha (PROTOTIPO) - centro de grupo k-means",
-            tooltip="Zona predicha (PROTOTIPO)",
-        ).add_to(mapa)
-
-    # Zoom to the selected localidad so the filter is visible immediately.
-    if filtro != "Todas las localidades" and len(df_mapa) > 1:
-        mapa.fit_bounds(
-            [
-                [df_mapa["lat"].min(), df_mapa["lon"].min()],
-                [df_mapa["lat"].max(), df_mapa["lon"].max()],
-            ]
-        )
-
-    # Plain HTML embed: pan/zoom stay 100% client-side (no Streamlit re-runs).
-    components.html(mapa._repr_html_(), height=540)
-
-    st.markdown(
-        f'<div class="nota"><b>Lectura del mapa:</b> el calor muestra la densidad '
-        "de la <b>muestra de puntos sintética</b> cuya distribución por localidad se "
-        "construyó a partir de los <b>incidentes reales</b> de la línea 123. "
-        f"<b>Zonas predichas:</b> {len(centros_cluster)} centros k-means calculados "
-        "sobre los puntos visibles (PROTOTIPO); el modelo de predicción real de "
-        "zonas llegará en una fase posterior.</div>",
-        unsafe_allow_html=True,
-    )
-
-    col_top, col_tipos = st.columns(2)
-    with col_top:
-        st.subheader("Localidades con más incidentes")
-        top = resumen.head(10).set_index("LOCALIDAD")["total_incidentes"]
-        st.bar_chart(top, height=300)
-    with col_tipos:
-        st.subheader("Tipos de incidentes más frecuentes")
-        tipos = data_nuse.cargar_top_tipos(10)
-        tabla = tipos.copy()
-        tabla.columns = ["Tipo de incidente", "Total"]
-        st.dataframe(tabla, use_container_width=True, hide_index=True)
-
-
-# -------------------------------------------------------------------------------
-# Módulo B : Perfil de estilo de vida
-# -------------------------------------------------------------------------------
-
-def valores_a_perfil(edad, bmi, hipertension, colesterol, actividad, fumador, salud) -> dict:
-    return {
-        "edad": float(edad),
-        "bmi": float(bmi),
-        "hipertension": 1 if hipertension == "Sí" else 0,
-        "colesterol_alto": 1 if colesterol == "Sí" else 0,
-        "actividad_fisica": 1 if actividad == "Sí" else 0,
-        "fumador": 1 if fumador == "Sí" else 0,
-        "salud_general": float(salud),
-    }
-
-
-def renderizar_resultado_perfil() -> None:
-    if "perfil_prob" not in st.session_state:
-        return
-    prob = st.session_state["perfil_prob"]
-    exp = st.session_state["perfil_exp"]
-    factores = st.session_state.get("perfil_factores", [])
-
-    st.markdown("### Resultado de su perfil")
-    c1, c2 = st.columns([1, 1])
+def panel_filtros():
+    etiquetas = [data_nuse.etiqueta(a, m) for a, m in data_nuse.periodos()]
+    c1, c2, c3 = st.columns([3, 1, 1])
     with c1:
-        st.markdown("**Probabilidad estimada (demo)**")
-        st.markdown(
-            f"<p style='font-size:2.4rem;font-weight:700;color:#FFFFFF;line-height:1;'>"
-            f"{prob:.1%}</p><p>de presentar enfermedad cardiometabólica "
-            "(diabetes o enfermedad cardiovascular).</p>",
-            unsafe_allow_html=True,
-        )
+        rango = st.select_slider("Línea de tiempo (meses)", options=etiquetas,
+                                 value=(etiquetas[0], etiquetas[-1]))
+    with c3:
+        modo = st.radio("Vista", ["Histórico", "Predicho"], horizontal=False)
     with c2:
-        st.markdown("**Su exposición personal (0-100)**")
-        st.markdown(barra("Exposición (Módulo B)", exp, BLUE), unsafe_allow_html=True)
-
-    st.markdown("**Factores que más contribuyen a su resultado (explicabilidad demo)**")
-    for f in factores[:5]:
-        direccion = "aumenta" if f["contribucion"] > 0 else "disminuye"
-        color = ALERTA if f["contribucion"] > 0 else OK
-        st.markdown(
-            f"· {f['etiqueta']}: <span style='color:{color};font-weight:600;'>"
-            f"{direccion}</span> su exposición (coef. {f['contribucion']:+.3f})",
-            unsafe_allow_html=True,
-        )
-    st.caption(
-        "Explicabilidad demo basada en coeficientes de la regresión logística "
-        "(contribución = coef × (valor − media)). No es XAI validado."
-    )
+        deshabilitado = modo == "Predicho"
+        tipo_sel = st.selectbox("Tipo de incidente", ["Todos"] + data_nuse.listar_tipos(),
+                                index=0, disabled=deshabilitado,
+                                help="El modo Predicho usa totales (sin filtro de tipo).")
+    tipo = None if (tipo_sel == "Todos" or deshabilitado) else tipo_sel
+    return rango, modo, tipo
 
 
-def modulo_perfil() -> None:
-    st.header("Mi perfil de estilo de vida")
-    st.caption(
-        "Exposición personal (Módulo B): probabilidad estimada de diabetes o "
-        "enfermedad cardiovascular a partir del estilo de vida."
-    )
-    st.warning(
-        "Este modelo es una DEMO entrenada sobre datos SINTÉTICOS tipo-BRFSS, "
-        "no sobre datos reales. El modelo real (BRFSS 2015) llegará en una fase "
-        "posterior; los resultados no deben usarse con fines clínicos."
-    )
+# ---------------------------------------------------------------------------
+# Map
+# ---------------------------------------------------------------------------
 
-    with st.form("perfil"):
-        c1, c2 = st.columns(2)
-        with c1:
-            edad = st.number_input("Edad", min_value=18, max_value=90, value=45, step=1)
-            bmi = st.number_input("IMC (índice de masa corporal)", min_value=15.0, max_value=50.0, value=26.0, step=0.5)
-            salud = st.selectbox("Salud general autopercibida", [1, 2, 3, 4, 5], index=2, format_func=lambda x: {1: "1 · Excelente", 2: "2 · Muy buena", 3: "3 · Buena", 4: "4 · Regular", 5: "5 · Mala"}[x])
-        with c2:
-            hipertension = st.selectbox("Hipertensión diagnosticada", ["No", "Sí"])
-            colesterol = st.selectbox("Colesterol alto", ["No", "Sí"])
-            actividad = st.selectbox("Actividad física regular", ["No", "Sí"])
-            fumador = st.selectbox("Consumo de tabaco", ["No", "Sí"])
-        enviar = st.form_submit_button("Calcular mi exposición", type="primary")
-
-    if enviar:
-        perfil = valores_a_perfil(edad, bmi, hipertension, colesterol, actividad, fumador, salud)
-        with st.spinner("Calculando exposición..."):
-            resultado = modelo_riesgo.predecir(perfil)
-        st.session_state["perfil_prob"] = resultado["probabilidad"]
-        st.session_state["perfil_exp"] = resultado["exposicion_0_100"]
-        st.session_state["perfil_factores"] = resultado["contribuciones"]
-        st.session_state["perfil_perfil"] = perfil
-
-    renderizar_resultado_perfil()
-
-    if st.button("Usar perfil de ejemplo", help="Carga un perfil de referencia para probar el score integral."):
-        ejemplo = valores_a_perfil(55, 29.0, "No", "Sí", "No", "No", 3)
-        resultado = modelo_riesgo.predecir(ejemplo)
-        st.session_state["perfil_prob"] = resultado["probabilidad"]
-        st.session_state["perfil_exp"] = resultado["exposicion_0_100"]
-        st.session_state["perfil_factores"] = resultado["contribuciones"]
-        st.session_state["perfil_perfil"] = ejemplo
-        st.rerun()
+def _bounds(geo: dict):
+    lats, lons = [], []
+    for f in geo.get("features", []):
+        g = f["geometry"]
+        poligonos = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
+        for poly in poligonos:
+            for ring in poly:
+                for x, y in ring:
+                    lons.append(float(x)); lats.append(float(y))
+    return [[min(lats), min(lons)], [max(lats), max(lons)]]
 
 
-# -------------------------------------------------------------------------------
-# Integración : Score integral
-# -------------------------------------------------------------------------------
-
-def modulo_score(resumen: pd.DataFrame) -> None:
-    st.header("Score integral = Peligro × Exposición")
-    st.caption(
-        "Combinación de la densidad histórica de incidentes (territorio) con el "
-        "perfil personal de salud, bajo el marco ISO 31000 (Riesgo = Peligro × Exposición)."
-    )
-
-    localidades = data_nuse.listar_localidades()
-    localidad = st.selectbox(
-        "Seleccione su localidad de Bogotá",
-        localidades,
-        index=0,
-        help="Localidad donde habita o transita con mayor frecuencia.",
-    )
-
-    try:
-        peligro = integracion.hazard_score(localidad)
-    except KeyError as exc:
-        st.error(f"Localidad no encontrada: {exc}")
-        return
-
-    tiene_perfil = "perfil_exp" in st.session_state
-    if tiene_perfil:
-        exposicion = integracion.exposure_score(st.session_state["perfil_prob"])
-    else:
-        st.info(
-            "Aún no calculó su perfil personal. Puede calcularlo en la pestaña "
-            "«Mi perfil de estilo de vida» o usar el perfil de ejemplo."
-        )
-        if st.button("Usar perfil de ejemplo para el score integral"):
-            ejemplo = valores_a_perfil(55, 29.0, "No", "Sí", "No", "No", 3)
-            resultado = modelo_riesgo.predecir(ejemplo)
-            st.session_state["perfil_prob"] = resultado["probabilidad"]
-            st.session_state["perfil_exp"] = resultado["exposicion_0_100"]
-            st.session_state["perfil_factores"] = resultado["contribuciones"]
-            st.session_state["perfil_perfil"] = ejemplo
-            st.rerun()
-        return
-
-    integral = integracion.score_integral(peligro["peligro_0_100"], exposicion)
-
-    st.markdown("### Desglose del score")
-    st.markdown(
-        barra("Peligro territorial (Módulo A)", peligro["peligro_0_100"], NAVY),
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        barra("Exposición personal (Módulo B)", exposicion, BLUE),
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        barra("Score integral", integral["integral_0_100"], integral["color"]),
-        unsafe_allow_html=True,
-    )
-
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.metric("Resultado", f"{integral['integral_0_100']:.1f} / 100", integral["banda"])
-        st.caption(
-            f"{peligro['total_incidentes']:,} incidentes históricos en {localidad} "
-            f"({peligro['proporcion']:.1%} del total de Bogotá)."
-        )
-    with c2:
-        st.markdown(
-            f'<div class="alerta"><b>Interpretación ({integral["banda"]}):</b> '
-            f"{integral['interpretacion']}</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Fórmula del prototipo: Score = (Peligro × Exposición) / 100. "
-            f"{integracion.NOTA_CALIBRACION}"
-        )
-
-    st.markdown("---")
-    st.caption(f"Contexto de datos: {integracion.contexto_datos()}")
+def _centroide(geom) -> tuple[float, float]:
+    anillos = geom["coordinates"] if geom["type"] == "MultiPolygon" else [geom["coordinates"]]
+    pts = anillos[0][0]
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    return (sum(ys) / len(ys), sum(xs) / len(xs))  # (lat, lon)
 
 
-# -------------------------------------------------------------------------------
+def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
+                   siniestros: pd.DataFrame | None = None) -> folium.Map:
+    colormap = cm.linear.YlOrRd_09.scale(0, vmax)
+    colormap.caption = f"Probabilidad (%) · escala fija 0–{vmax:.1f}"
+    mapa_f = folium.Map(location=[4.65, -74.10], zoom_start=11, tiles=None, control_scale=True)
+
+    # --- Basemaps (seleccionables) ---
+    folium.TileLayer(
+        tiles=("https://server.arcgisonline.com/ArcGIS/rest/services/"
+               "Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"),
+        attr="Esri, HERE, Garmin, © OpenStreetMap contributors",
+        name="Oscuro", show=True).add_to(mapa_f)
+    folium.TileLayer("OpenStreetMap", name="Calles", show=False).add_to(mapa_f)
+    folium.TileLayer(
+        tiles=("https://server.arcgisonline.com/ArcGIS/rest/services/"
+               "World_Imagery/MapServer/tile/{z}/{y}/{x}"),
+        attr="Esri, Maxar, Earthstar Geographics", name="Satélite", show=False).add_to(mapa_f)
+
+    # --- Capa principal: probabilidad por UPZ ---
+    folium.GeoJson(
+        geo, name="Probabilidad por UPZ",
+        style_function=lambda f: {"fillColor": colormap(float(f["properties"].get("prob_pct", 0.0))),
+                                  "color": "#FFFFFF", "weight": 0.5, "fillOpacity": 0.82},
+        highlight_function=lambda _: {"weight": 2.0, "color": "#FFFFFF", "fillOpacity": 0.95},
+        tooltip=folium.GeoJsonTooltip(
+            fields=["nombre_upz", "localidad", "total_incidentes", "prob_pct"],
+            aliases=["UPZ:", "Localidad:", "Incidentes:", "Probabilidad (%):"],
+            localize=True, sticky=True),
+    ).add_to(mapa_f)
+
+    # --- Capa: límites de localidad ---
+    loc = (localidad_geo or {}).get("features", [])
+    if loc:
+        folium.GeoJson(
+            localidad_geo, name="Límites de localidad", show=True,
+            style_function=lambda _: {"fillOpacity": 0.0, "color": "#00E5FF", "weight": 1.6},
+            tooltip=folium.GeoJsonTooltip(fields=["localidad"], aliases=["Localidad:"], sticky=True),
+        ).add_to(mapa_f)
+
+    # --- Capa: nombres de UPZ (apagada por defecto) ---
+    nombres = folium.FeatureGroup(name="Nombres de UPZ", show=False)
+    for f in geo.get("features", []):
+        try:
+            lat, lon = _centroide(f["geometry"])
+        except Exception:  # noqa: BLE001
+            continue
+        folium.Marker(
+            [lat, lon],
+            icon=folium.DivIcon(html=(
+                f'<div style="font-size:8px;color:#FFF;text-shadow:0 0 2px #000;">'
+                f'{f["properties"].get("nombre_upz", "")}</div>'), icon_size=(0, 0)),
+        ).add_to(nombres)
+    nombres.add_to(mapa_f)
+
+    # --- Capa: siniestros viales georreferenciados (puntos reales, apagada) ---
+    if siniestros is not None and not siniestros.empty:
+        calor = folium.FeatureGroup(name="Siniestros viales (puntos)", show=False)
+        HeatMap(
+            siniestros[["lat", "lon"]].to_numpy().tolist(),
+            radius=7, blur=9, min_opacity=0.25,
+            gradient={0.2: "#2E75B6", 0.5: "#FFEB3B", 0.8: "#C55A11", 1.0: "#C00000"},
+        ).add_to(calor)
+        calor.add_to(mapa_f)
+
+    mapa_f.fit_bounds(_bounds(geo))
+    folium.LayerControl(collapsed=False).add_to(mapa_f)
+    colormap.add_to(mapa_f)
+    return mapa_f
+
+
+# ---------------------------------------------------------------------------
 # Main
-# -------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def main() -> None:
+    st.set_page_config(page_title="Sentinel · Mapa de probabilidad — Bogotá",
+                       page_icon=":material/location_on:", layout="wide",
+                       initial_sidebar_state="expanded")
     estilo_global()
     sidebar()
-    if not cargar_datos_seguro():
+    try:
+        data_nuse._asegurar_datos()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No se pudieron cargar los datos: {exc}")
         st.stop()
-    resumen = header()
 
-    tab_mapa, tab_perfil, tab_score = st.tabs(
-        ["Mapa de riesgo territorial", "Mi perfil de estilo de vida", "Score integral"]
+    rango, modo, tipo = panel_filtros()
+    desde = _parse(rango[0]); hasta = _parse(rango[1])
+    objetivo_pred = None
+
+    if modo == "Predicho":
+        p0 = modelo.primer_mes_predecible()
+        objetivo = hasta if hasta >= p0 else p0
+        if objetivo != hasta:
+            st.info(
+                f"El modelo necesita al menos 1 año de historia previa. Se muestra la "
+                f"predicción para **{data_nuse.etiqueta(*objetivo)}** (primer mes predecible)."
+            )
+        superficie = _superficie_predicha(*objetivo)
+        periodo_txt = data_nuse.etiqueta(*objetivo)
+        etiqueta_modo = f"Predicho · {periodo_txt}"
+        objetivo_pred = objetivo
+    else:
+        superficie = _superficie_historica(desde, hasta, tipo)
+        periodo_txt = rango[0] if rango[0] == rango[1] else f"{rango[0]}→{rango[1]}"
+        etiqueta_modo = f"Histórico · {periodo_txt}" + (f" · {tipo}" if tipo else "")
+
+    header(superficie, periodo_txt, etiqueta_modo)
+
+    if int(superficie["total_incidentes"].sum()) == 0:
+        st.warning("No hay datos para la selección. Probá otro rango o tipo.")
+        st.stop()
+
+    geo = mapa.enriquecer_geojson(_geojson_base(), superficie)
+
+    sin = _siniestros()
+    anio_ref = objetivo_pred[0] if modo == "Predicho" else desde[0]
+    y_ini, y_fin = max(anio_ref, 2015), min(anio_ref if modo == "Predicho" else hasta[0], 2021)
+    if not sin.empty and y_ini <= y_fin:
+        sub = sin[sin["anio"].between(y_ini, y_fin)]
+        sin_sel = sub.sample(min(len(sub), 30000), random_state=0) if len(sub) > 30000 else sub
+    else:
+        sin_sel = sin.iloc[0:0]
+
+    mapa_f = construir_mapa(geo, mapa.escala_prob_max(), _localidad_base(), sin_sel)
+    st.subheader("Superficie de probabilidad")
+    components.html(mapa_f._repr_html_(), height=580, scrolling=False)
+    if not sin_sel.empty:
+        st.caption(
+            f"Capa «Siniestros viales (puntos)»: **{len(sin_sel):,} puntos reales** "
+            f"georreferenciados ({y_ini}–{y_fin}), fuente SDM. Activala en el control de capas."
+        )
+    st.caption(
+        ("Predicción del modelo para " + periodo_txt + " (usa solo historia previa). "
+         if modo == "Predicho" else
+         "Frecuencia relativa empírica del periodo seleccionado. ")
+        + "El color codifica la probabilidad (%) en escala fija; pasá el cursor sobre una UPZ para el detalle."
     )
-    with tab_mapa:
-        modulo_mapa(resumen)
-    with tab_perfil:
-        modulo_perfil()
-    with tab_score:
-        modulo_score(resumen)
 
+    if modo == "Predicho":
+        comp = mapa.comparacion_mes(*objetivo_pred)
+        mae = float(comp["error"].abs().mean())
+        corr = float(comp["predicho"].corr(comp["real"]))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader(f"Predicho vs real — {periodo_txt}")
+            top = comp.head(12).set_index("nombre_upz")[["predicho", "real"]]
+            top.columns = ["Predicho", "Real"]
+            st.bar_chart(top, height=340, stack=False)
+        with c2:
+            st.subheader("Dispersión por UPZ (112)")
+            st.scatter_chart(comp, x="real", y="predicho", height=340)
+        st.caption(
+            f"MAE de {periodo_txt}: **{mae:,.1f}** incidentes por UPZ · "
+            f"correlación predicho-real: **{corr:.3f}**. "
+            "Puntos sobre la diagonal = predicción perfecta."
+        )
+    else:
+        col_top, col_tend = st.columns(2)
+        with col_top:
+            st.subheader("UPZ con mayor probabilidad")
+            st.bar_chart(mapa.top_upz(superficie, 10).set_index("nombre_upz")["prob_pct"], height=320)
+        with col_tend:
+            st.subheader("Incidentes por mes")
+            pm = data_nuse.cargar_por_mes().copy()
+            pm["fecha"] = pm["ANIO"].astype(str) + "-" + pm["MES"].astype(str).str.zfill(2)
+            st.bar_chart(pm.set_index("fecha")["total_incidentes"], height=320)
+
+    metrics = modelo.metricas_guardadas()
+    if metrics:
+        with st.expander("Detalle del modelo predictivo"):
+            st.markdown(
+                f"**Modelo:** GBM mensual · **train** {metrics['train']} · **test** {metrics['test']}\n\n"
+                f"| Modelo | MAE | RMSE |\n|---|---|---|\n"
+                f"| baseline (mes anterior) | {metrics['metricas']['baseline_lag1']['mae']:,.1f} | "
+                f"{metrics['metricas']['baseline_lag1']['rmse']:,.1f} |\n"
+                f"| blend (mes ant. + año ant.) | {metrics['metricas']['baseline_blend']['mae']:,.1f} | "
+                f"{metrics['metricas']['baseline_blend']['rmse']:,.1f} |\n"
+                f"| **GBM** | **{metrics['metricas']['gbm']['mae']:,.1f}** | "
+                f"**{metrics['metricas']['gbm']['rmse']:,.1f}** |\n\n"
+                f"El GBM mejora el MAE del baseline en **{metrics['mejora_vs_baseline_pct']}%**."
+            )
+
+    prov = data_nuse.cargar_proveniencia()
     st.markdown("---")
     st.caption(
-        "Prototipo MVP · Proyecto académico PTIA · Escuela Colombiana de Ingeniería. "
-        "Datos de muestra, modelo sintético y calibración placeholder; "
-        "reemplazos reales en fases posteriores del proyecto."
+        f"Fuente: {Path(prov['fuente_datos']).name} · {prov['periodo']['anio_min']}-"
+        f"{prov['periodo']['anio_max']} · {prov['total_incidentes']:,} incidentes · {prov['upz_con_datos']} UPZ."
     )
+
+
+def _parse(etiqueta: str) -> tuple[int, int]:
+    a, m = etiqueta.split("-")
+    return int(a), int(m)
 
 
 if __name__ == "__main__":

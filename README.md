@@ -1,39 +1,61 @@
-# RIESGO INTEGRAL · Bogotá — Prototipo MVP
+# Sentinel · Mapa de probabilidad de incidentes — Bogotá
 
 Prototipo funcional para el proyecto académico PTIA (Escuela Colombiana de
-Ingeniería, Ingeniería de Sistemas). El sistema calcula un **score de riesgo
-integral** a partir de dos componentes, bajo el marco ISO 31000:
+Ingeniería, Ingeniería de Sistemas). El sistema construye una **superficie de
+probabilidad de incidentes por UPZ** a partir de los incidentes reales
+reportados a la **Línea 123 (NUSE)** de Bogotá, en dos vistas:
 
-```
-Score integral = Peligro (territorio) × Exposición (persona)
-```
+- **Histórico** — frecuencia relativa empírica del periodo seleccionado.
+- **Predicho** — estimación de un **modelo supervisado (GBM mensual)** para el
+  último mes del periodo seleccionado.
 
-- **Módulo A — Peligro territorial**: densidad histórica de incidentes
-  reportados a la línea de emergencias 123 (NUSE) de Bogotá. Se presenta como un
-  mapa interactivo con calor de una muestra de puntos y con "zonas predichas"
-  (k-means) marcadas claramente como **prototipo**.
-- **Módulo B — Exposición personal**: perfil de estilo de vida (edad, IMC,
-  hipertensión, colesterol, actividad física, tabaquismo, salud general) que
-  devuelve una probabilidad estimada de enfermedad cardiometabólica (diabetes o
-  enfermedad cardiovascular) mediante regresión logística.
-- **Integración**: el usuario selecciona una localidad de Bogotá y el sistema
-  combina el peligro territorial (0-100) con la exposición personal (0-100) en
-  un score integral (0-100) con barras de desglose y texto de interpretación.
+> Alcance: **enfocado en el mapa** (según indicación del docente). El módulo de
+> riesgo de salud individual quedó fuera de esta iteración.
 
 ---
 
-## Estado de los datos y del modelo
+## Qué hace
 
-| Componente            | Estado actual                                             | Reemplazo futuro            |
-| --------------------- | --------------------------------------------------------- | --------------------------- |
-| Incidentes NUSE       | Agregados **reales** 2015-2026 (localidad × año × tipo)   | —                           |
-| Puntos del mapa       | **Muestra sintética** con distribución basada en datos reales | Incidentes reales con coordenadas |
-| Zonas predichas       | **Placeholder** k-means sobre puntos de muestra           | Modelo de predicción real   |
-| Modelo de salud       | **Demo** entrenada sobre datos **sintéticos** tipo-BRFSS (AUC reportado) | BRFSS 2015 real            |
-| Calibración del score | **Placeholder** de calibración (definición en Hito 2)     | Calibración metodológica    |
+- Agrega **1.109.242 registros** NUSE (2015–2026) por **UPZ × año × mes × tipo**.
+- Calcula la **probabilidad empírica** por UPZ (participación en el total).
+- **Modelo predictivo** (`modelo.py`): GradientBoostingRegressor que estima los
+  incidentes mensuales por UPZ usando solo historia previa (sin fuga de futuro).
+- Pinta un **mapa coroplético** de las 112 UPZ con **línea de tiempo (rango de
+  meses)**, filtro por tipo y toggle **Histórico / Predicho**.
+- Muestra la **tendencia mensual** y el **ranking de UPZ**.
 
-> Los valores del prototipo son demostrativos: **no son una medida de riesgo
-> validada** y no deben usarse con fines de decisión o clínicos.
+---
+
+## El modelo (componente de IA)
+
+- **Problema:** predicción de **conteos** (regresión) por UPZ-mes — supervisado.
+- **Variables (features):** `lag1` (mes anterior), `lag12`/`lag13` (mismo mes del
+  año anterior), medias móviles (`ma3`, `ma12`), `MES` y `ANIO`.
+- **Validación temporal:** train hasta **2023-12**, test **2024-01 … 2025-12**
+  (nunca split aleatorio, para no filtrar el futuro).
+- **Comparación contra baselines** (mes anterior; blend mes/año anterior).
+
+| Modelo | MAE | RMSE |
+| --- | ---: | ---: |
+| baseline (mes anterior) | 231.9 | 381.7 |
+| blend (mes ant. + año ant.) | 191.3 | 297.4 |
+| **GBM (elegido)** | **185.7** | **279.1** |
+
+El GBM mejora el MAE del baseline en **≈19.9 %** → el modelo **sí aporta** a
+granularidad mensual.
+
+> Hallazgo honesto: con granularidad **anual** ningún modelo supera a la
+> persistencia (el año anterior); por eso se adoptó la granularidad mensual.
+
+---
+
+## Estado de los datos
+
+| Componente        | Estado                                                     |
+| ----------------- | ---------------------------------------------------------- |
+| Incidentes NUSE   | **Reales** (Datos Abiertos Bogotá, SDSCJ) 2015–2026         |
+| Polígonos UPZ     | **Reales** (Datos Abiertos Bogotá) — 112 UPZ                |
+| Probabilidad      | Histórico: frecuencia empírica · Predicho: modelo GBM        |
 
 ---
 
@@ -41,54 +63,61 @@ Score integral = Peligro (territorio) × Exposición (persona)
 
 ```
 prototipo/
-├── app.py               # Aplicación Streamlit (interfaz)
-├── data_nuse.py         # Carga ligera de los datos agregados NUSE
-├── preparar_datos.py    # Script offline: genera los agregados desde el CSV crudo
-├── modelo_riesgo.py     # Dataset sintético + regresión logística + predicción
-├── integracion.py       # hazard_score / exposure_score / score_integral
+├── app.py               # Aplicación Streamlit (mapa, timeline, toggle)
+├── mapa.py              # Superficie de probabilidad (histórica y predicha)
+├── modelo.py            # Modelo supervisado mensual (GBM) + evaluación
+├── data_nuse.py         # Carga ligera de los datos agregados
+├── preparar_datos.py    # Script offline: del CSV crudo a los agregados por UPZ
 ├── smoke_check.py       # Verificación automatizada (sin Streamlit)
 ├── requirements.txt     # Dependencias
-├── assets/
-│   ├── logo.svg         # Logo vectorial (marca demo)
-│   └── ico.svg          # Marca para favicon
-└── data/                # Generado por preparar_datos.py (no incluye el CSV crudo)
+├── assets/              # Logo (marca demo)
+└── data/                # Generado por preparar_datos.py / modelo.py
+    ├── upz_probabilidad.csv    # UPZ: total, prob_pct, indice_0_100
+    ├── upz_anio_mes_tipo.csv.gz# tabla de hechos mensual (gzip)
+    ├── nuse_por_anio.csv       # total por año
+    ├── nuse_por_mes.csv        # total por mes
+    ├── upz_geo.geojson         # polígonos UPZ (reproyectados a lon/lat)
+    ├── modelo.joblib           # modelo entrenado
+    ├── modelo_meta.json        # métricas del modelo
+    └── proveniencia.json       # trazabilidad de la fuente y los filtros
 ```
 
 ## ¿Cómo ejecutar?
 
 ```bash
-pip install -r requirements.txt          # 1. instalar dependencias
-python preparar_datos.py                  # 2. generar agregados desde el CSV crudo
-python smoke_check.py                     # 3. (opcional) verificación automatizada
-streamlit run app.py                      # 4. lanzar la aplicación
+pip install -r requirements.txt          # 1. dependencias
+python preparar_datos.py                  # 2. agregados desde el CSV crudo
+python modelo.py                          # 3. entrenar/evaluar el modelo
+python smoke_check.py                     # 4. (opcional) verificación
+streamlit run app.py                      # 5. lanzar la aplicación
 ```
 
-> `preparar_datos.py` lee el CSV crudo de NUSE (113 MB) indicado por ruta
-> (argumento opcional) o la ruta por defecto documentada. Solo se ejecuta una
-> vez: sus salidas ligeras quedan en `data/`. La aplicación funciona sin el CSV
-> crudo, usando únicamente los agregados.
+`preparar_datos.py` espera el CSV crudo de NUSE en `../datos/nuse_llamadas.csv` y
+el GeoJSON de UPZ en `../datos/upz.geojson` (o se le pasan por argumento).
+
+**Fuente de datos:**
+- NUSE Línea 123 (SDSCJ, Datos Abiertos Bogotá) — ~115 MB, 1.109.242 filas.
+- Polígonos UPZ (Datos Abiertos Bogotá) — 112 UPZ (EPSG:3857, reproyectados a WGS84).
+- Licencia: Creative Commons Attribution Share-Alike 4.0.
 
 ## Notas metodológicas
 
-- **Filtros**: los códigos `99`/`-` (SIN LOCALIZACIÓN) se excluyen de los
-  agregados. La localidad Sumapaz (`20`) se conserva aunque aporta pocos
-  incidentes. Todo queda documentado en `data/proveniencia.json`.
-- **Normalización del peligro**: reescalado min-max 0-100 de los incidentes por
-  localidad (densidad relativa). La combinación `(Peligro × Exposición) / 100`
-  es un **placeholder de calibración** que se definirá formalmente en la fase
-  metodológica (Hito 2).
-- **Explicabilidad (Módulo B)**: contribución = coeficiente × (valor − media),
-  etiquetada como demostración (demo XAI), no como XAI validado.
+- **Filtros:** se excluyen códigos sin localización (`99`, `-`, `UPZ999`) y las
+  UPZ especiales/rurales que no están en el GeoJSON oficial.
+- **Probabilidad:** `prob_pct = incidentes_UPZ / total × 100` sobre el periodo
+  (o la predicción). El color usa un índice min-max 0–100.
+- **Join espacial:** por `COD_UPZ` (formato `UPZnn`).
 
-## Paleta de marca (demo)
+## Limitaciones (transparencia)
 
-Azul marino `#1F3864` · Azul corporativo `#2E75B6` · Acento cálido `#C55A11` ·
-Alerta `#C00000`. El nombre de marca "RIESGO INTEGRAL" es un nombre provisional
-que será reemplazado por el nombre final elegido por el equipo.
+- Es un **sesgo de reporte**: son incidentes *reportados* a la Línea 123.
+- La probabilidad es **relativa** al histórico/predicción; no es calibrada ni causal.
+- El modelo usa solo la serie histórica por UPZ (no variables exógenas como
+  población o comercio).
+- Sin validez para decisiones de seguridad pública ni uso oficial.
 
 ## Fases posteriores
 
-- Incidentes reales georreferenciados (reemplazan los puntos de muestra).
-- Modelo BRFSS 2015 real (reemplaza el modelo sintético).
-- Modelo de predicción de zonas (reemplaza los centros k-means).
-- Diseño metodológico y calibración formal del score integral (Hito 2).
+- Variables exógenas (población, comercio, iluminación) para mejorar el modelo.
+- Manejo explícito de eventos atípicos (p. ej. confinamiento 2020).
+- Probabilidad calibrada con intervalos de confianza.
