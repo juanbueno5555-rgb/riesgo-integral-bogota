@@ -3,12 +3,11 @@
 Proyecto académico PTIA (Escuela Colombiana de Ingeniería, Ingeniería de Sistemas).
 
 A partir de los incidentes reales reportados a la Línea 123 (NUSE, 2015-2026),
-agregados por UPZ, el sistema muestra una superficie de PROBABILIDAD por UPZ con
-dos vistas:
+agregados por UPZ, el sistema muestra DOS mapas de PROBABILIDAD por UPZ:
 
-  - Histórico : frecuencia relativa empírica del periodo seleccionado.
-  - Predicho  : estimación del modelo supervisado (GBM mensual) para el último
-                mes del periodo seleccionado.
+  - Real     : frecuencia relativa empírica del periodo seleccionado.
+  - Predicho : estimación del modelo supervisado (GBM mensual) para el último
+               mes del periodo seleccionado.
 
 La probabilidad es relativa al histórico/predicción; no es una probabilidad
 calibrada ni causal.
@@ -16,6 +15,7 @@ calibrada ni causal.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import branca.colormap as cm
@@ -112,8 +112,8 @@ def sidebar() -> None:
             "(NUSE, Bogotá) 2015-2026, agregados por UPZ. Fuente: Datos Abiertos Bogotá (SDSCJ).</div>",
             unsafe_allow_html=True)
         st.markdown(
-            '<div class="nota"><b>Probabilidad:</b> en modo Histórico es la frecuencia relativa '
-            "empírica del periodo; en modo Predicho es la estimación del modelo. No es calibrada ni causal.</div>",
+            '<div class="nota"><b>Probabilidad:</b> el mapa <b>Real</b> usa la frecuencia relativa '
+            "empírica del periodo; el mapa <b>Predicho</b> usa la estimación del modelo. No es calibrada ni causal.</div>",
             unsafe_allow_html=True)
         metrics = modelo.metricas_guardadas()
         if metrics:
@@ -157,19 +157,16 @@ def header(superficie, periodo_txt: str, modo: str) -> None:
 
 def panel_filtros():
     etiquetas = [data_nuse.etiqueta(a, m) for a, m in data_nuse.periodos()]
-    c1, c2, c3 = st.columns([3, 1, 1])
+    c1, c2 = st.columns([3, 1])
     with c1:
         rango = st.select_slider("Línea de tiempo (meses)", options=etiquetas,
                                  value=(etiquetas[0], etiquetas[-1]))
-    with c3:
-        modo = st.radio("Vista", ["Histórico", "Predicho"], horizontal=False)
     with c2:
-        deshabilitado = modo == "Predicho"
         tipo_sel = st.selectbox("Tipo de incidente", ["Todos"] + data_nuse.listar_tipos(),
-                                index=0, disabled=deshabilitado,
-                                help="El modo Predicho usa totales (sin filtro de tipo).")
-    tipo = None if (tipo_sel == "Todos" or deshabilitado) else tipo_sel
-    return rango, modo, tipo
+                                index=0,
+                                help="Aplica al mapa Real. El mapa Predicho usa totales (sin filtro de tipo).")
+    tipo = None if tipo_sel == "Todos" else tipo_sel
+    return rango, tipo
 
 
 # ---------------------------------------------------------------------------
@@ -281,87 +278,91 @@ def main() -> None:
         st.error(f"No se pudieron cargar los datos: {exc}")
         st.stop()
 
-    rango, modo, tipo = panel_filtros()
+    rango, tipo = panel_filtros()
     desde = _parse(rango[0]); hasta = _parse(rango[1])
-    objetivo_pred = None
 
-    if modo == "Predicho":
-        p0 = modelo.primer_mes_predecible()
-        objetivo = hasta if hasta >= p0 else p0
-        if objetivo != hasta:
-            st.info(
-                f"El modelo necesita al menos 1 año de historia previa. Se muestra la "
-                f"predicción para **{data_nuse.etiqueta(*objetivo)}** (primer mes predecible)."
-            )
-        superficie = _superficie_predicha(*objetivo)
-        periodo_txt = data_nuse.etiqueta(*objetivo)
-        etiqueta_modo = f"Predicho · {periodo_txt}"
-        objetivo_pred = objetivo
-    else:
-        superficie = _superficie_historica(desde, hasta, tipo)
-        periodo_txt = rango[0] if rango[0] == rango[1] else f"{rango[0]}→{rango[1]}"
-        etiqueta_modo = f"Histórico · {periodo_txt}" + (f" · {tipo}" if tipo else "")
+    # Mapa REAL: frecuencia relativa empírica del periodo/tipo seleccionados.
+    superficie_real = _superficie_historica(desde, hasta, tipo)
+    periodo_real = rango[0] if rango[0] == rango[1] else f"{rango[0]}→{rango[1]}"
+    etiqueta_real = f"Real · {periodo_real}" + (f" · {tipo}" if tipo else "")
 
-    header(superficie, periodo_txt, etiqueta_modo)
+    # Mapa PREDICHO: estimación del modelo para el mes objetivo del periodo.
+    p0 = modelo.primer_mes_predecible()
+    objetivo = hasta if hasta >= p0 else p0
+    if objetivo != hasta:
+        st.info(
+            f"El modelo necesita al menos 1 año de historia previa. Se muestra la "
+            f"predicción para **{data_nuse.etiqueta(*objetivo)}** (primer mes predecible)."
+        )
+    superficie_pred = _superficie_predicha(*objetivo)
+    periodo_pred = data_nuse.etiqueta(*objetivo)
 
-    if int(superficie["total_incidentes"].sum()) == 0:
+    header(superficie_real, periodo_real, "Real + Predicho")
+
+    if int(superficie_real["total_incidentes"].sum()) == 0:
         st.warning("No hay datos para la selección. Probá otro rango o tipo.")
         st.stop()
 
-    geo = mapa.enriquecer_geojson(_geojson_base(), superficie)
-
+    # Siniestros reales (capa opcional), acotados al periodo del mapa real.
     sin = _siniestros()
-    anio_ref = objetivo_pred[0] if modo == "Predicho" else desde[0]
-    y_ini, y_fin = max(anio_ref, 2015), min(anio_ref if modo == "Predicho" else hasta[0], 2021)
+    y_ini, y_fin = max(desde[0], 2015), min(hasta[0], 2021)
     if not sin.empty and y_ini <= y_fin:
         sub = sin[sin["anio"].between(y_ini, y_fin)]
         sin_sel = sub.sample(min(len(sub), 30000), random_state=0) if len(sub) > 30000 else sub
     else:
         sin_sel = sin.iloc[0:0]
 
-    mapa_f = construir_mapa(geo, mapa.escala_prob_max(), _localidad_base(), sin_sel)
-    st.subheader("Superficie de probabilidad")
-    components.html(mapa_f._repr_html_(), height=580, scrolling=False)
+    vmax = mapa.escala_prob_max()
+    loc = _localidad_base()
+    geo_real = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_real)
+    geo_pred = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_pred)
+    mapa_real = construir_mapa(geo_real, vmax, loc, sin_sel)
+    mapa_pred = construir_mapa(geo_pred, vmax, loc, sin_sel)
+
+    st.subheader("Superficie de probabilidad — real vs predicho")
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        st.markdown(f"**Real (histórico)** · {periodo_real}" + (f" · {tipo}" if tipo else ""))
+        components.html(mapa_real._repr_html_(), height=520, scrolling=False)
+    with mc2:
+        st.markdown(f"**Predicho (modelo)** · {periodo_pred}")
+        components.html(mapa_pred._repr_html_(), height=520, scrolling=False)
     if not sin_sel.empty:
         st.caption(
             f"Capa «Siniestros viales (puntos)»: **{len(sin_sel):,} puntos reales** "
             f"georreferenciados ({y_ini}–{y_fin}), fuente SDM. Activala en el control de capas."
         )
     st.caption(
-        ("Predicción del modelo para " + periodo_txt + " (usa solo historia previa). "
-         if modo == "Predicho" else
-         "Frecuencia relativa empírica del periodo seleccionado. ")
-        + "El color codifica la probabilidad (%) en escala fija; pasá el cursor sobre una UPZ para el detalle."
+        "El color codifica la probabilidad (%) en una escala fija, comparable entre ambos mapas. "
+        "Pasá el cursor sobre una UPZ para ver su detalle."
     )
 
-    if modo == "Predicho":
-        comp = mapa.comparacion_mes(*objetivo_pred)
-        mae = float(comp["error"].abs().mean())
-        corr = float(comp["predicho"].corr(comp["real"]))
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader(f"Predicho vs real — {periodo_txt}")
-            top = comp.head(12).set_index("nombre_upz")[["predicho", "real"]]
-            top.columns = ["Predicho", "Real"]
-            st.bar_chart(top, height=340, stack=False)
-        with c2:
-            st.subheader("Dispersión por UPZ (112)")
-            st.scatter_chart(comp, x="real", y="predicho", height=340)
-        st.caption(
-            f"MAE de {periodo_txt}: **{mae:,.1f}** incidentes por UPZ · "
-            f"correlación predicho-real: **{corr:.3f}**. "
-            "Puntos sobre la diagonal = predicción perfecta."
-        )
-    else:
-        col_top, col_tend = st.columns(2)
-        with col_top:
-            st.subheader("UPZ con mayor probabilidad")
-            st.bar_chart(mapa.top_upz(superficie, 10).set_index("nombre_upz")["prob_pct"], height=320)
-        with col_tend:
-            st.subheader("Incidentes por mes")
-            pm = data_nuse.cargar_por_mes().copy()
-            pm["fecha"] = pm["ANIO"].astype(str) + "-" + pm["MES"].astype(str).str.zfill(2)
-            st.bar_chart(pm.set_index("fecha")["total_incidentes"], height=320)
+    comp = mapa.comparacion_mes(*objetivo)
+    mae = float(comp["error"].abs().mean())
+    corr = float(comp["predicho"].corr(comp["real"]))
+    r1, r2 = st.columns(2)
+    with r1:
+        st.subheader("UPZ con mayor probabilidad (real)")
+        st.bar_chart(mapa.top_upz(superficie_real, 10).set_index("nombre_upz")["prob_pct"], height=320)
+    with r2:
+        st.subheader(f"Predicho vs real — {periodo_pred}")
+        top = comp.head(12).set_index("nombre_upz")[["predicho", "real"]]
+        top.columns = ["Predicho", "Real"]
+        st.bar_chart(top, height=320, stack=False)
+    r3, r4 = st.columns(2)
+    with r3:
+        st.subheader("Dispersión por UPZ (112)")
+        st.scatter_chart(comp, x="real", y="predicho", height=320)
+    with r4:
+        st.subheader("Incidentes por mes")
+        pm = data_nuse.cargar_por_mes().copy()
+        pm["fecha"] = pm["ANIO"].astype(str) + "-" + pm["MES"].astype(str).str.zfill(2)
+        st.bar_chart(pm.set_index("fecha")["total_incidentes"], height=320)
+    st.caption(
+        f"MAE de {periodo_pred}: **{mae:,.1f}** incidentes por UPZ · "
+        f"correlación predicho-real: **{corr:.3f}**. "
+        "Puntos sobre la diagonal = predicción perfecta."
+    )
 
     metrics = modelo.metricas_guardadas()
     if metrics:
