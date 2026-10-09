@@ -34,7 +34,6 @@ NAVY = "#1F3864"
 BLUE = "#2E75B6"
 ACENTO = "#C55A11"
 ALERTA = "#C00000"
-FONDO = "#000000"
 
 RAIZ = Path(__file__).resolve().parent
 
@@ -76,9 +75,6 @@ def estilo_global() -> None:
     st.markdown(
         f"""
         <style>
-        .stApp {{ background-color: {FONDO}; }}
-        h1, h2, h3 {{ color: #FFFFFF; }}
-        p, li, label {{ color: #FFFFFF; }}
         .hero {{ padding: 0.4rem 0 0.2rem 0; }}
         .badge {{
             display: inline-block; background: {BLUE}; color: #FFFFFF;
@@ -86,8 +82,10 @@ def estilo_global() -> None:
             font-size: 0.8rem; margin-right: 0.35rem;
         }}
         .nota {{
-            background: #161616; border-left: 4px solid {ACENTO};
-            color: #FFFFFF; padding: 0.65rem 0.85rem; border-radius: 6px;
+            background: var(--secondary-background-color);
+            border-left: 4px solid {ACENTO};
+            color: var(--text-color);
+            padding: 0.65rem 0.85rem; border-radius: 6px;
             font-size: 0.9rem; margin: 0.6rem 0;
         }}
         </style>
@@ -162,16 +160,19 @@ def header(superficie, periodo_txt: str, modo: str) -> None:
 
 def panel_filtros():
     etiquetas = [data_nuse.etiqueta(a, m) for a, m in data_nuse.periodos()]
-    c1, c2 = st.columns([3, 1])
+    c1, c2, c3 = st.columns([3, 1, 1])
     with c1:
         rango = st.select_slider("Línea de tiempo (meses)", options=etiquetas,
                                  value=(etiquetas[0], etiquetas[-1]))
+    with c3:
+        modo = st.radio("Vista", ["Histórico", "Predicho"], horizontal=False)
     with c2:
+        deshabilitado = modo == "Predicho"
         tipo_sel = st.selectbox("Tipo de incidente", ["Todos"] + data_nuse.listar_tipos(),
-                                index=0,
-                                help="Aplica al mapa Real. El mapa Predicho usa totales (sin filtro de tipo).")
-    tipo = None if tipo_sel == "Todos" else tipo_sel
-    return rango, tipo
+                                index=0, disabled=deshabilitado,
+                                help="El modo Predicho usa totales (sin filtro de tipo).")
+    tipo = None if (tipo_sel == "Todos" or deshabilitado) else tipo_sel
+    return rango, modo, tipo
 
 
 # ---------------------------------------------------------------------------
@@ -227,14 +228,7 @@ def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
             localize=True, sticky=True),
     ).add_to(mapa_f)
 
-    # --- Capa: límites de localidad ---
-    loc = (localidad_geo or {}).get("features", [])
-    if loc:
-        folium.GeoJson(
-            localidad_geo, name="Límites de localidad", show=True,
-            style_function=lambda _: {"fillOpacity": 0.0, "color": "#00E5FF", "weight": 1.6},
-            tooltip=folium.GeoJsonTooltip(fields=["localidad"], aliases=["Localidad:"], sticky=True),
-        ).add_to(mapa_f)
+    # --- Capa de límites de localidad: eliminada a pedido (generaba las líneas cyan) ---
 
     # --- Capa: nombres de UPZ (apagada por defecto) ---
     nombres = folium.FeatureGroup(name="Nombres de UPZ", show=False)
@@ -263,8 +257,22 @@ def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
 
     mapa_f.fit_bounds(_bounds(geo))
     folium.LayerControl(collapsed=False).add_to(mapa_f)
-    colormap.add_to(mapa_f)
     return mapa_f
+
+
+def leyenda(vmax: float) -> None:
+    """Barra de color limpia, fuera del mapa (legible y sin tapar la superficie)."""
+    st.markdown(
+        '<div style="margin:2px 0 10px 0;">'
+        '<div style="height:16px;border-radius:8px;'
+        'background:linear-gradient(90deg,#ffffcc,#ffeda0,#fed976,#feb24c,'
+        '#fd8d3c,#fc4e2a,#e31a1c,#b10026);"></div>'
+        '<div style="display:flex;justify-content:space-between;color:var(--text-color);'
+        'font-size:0.72rem;margin-top:3px;">'
+        f'<span>0.0 %</span><span>{vmax / 2:.1f} %</span><span>{vmax:.1f} %</span></div>'
+        f'<div style="color:var(--text-color);opacity:0.7;font-size:0.72rem;">Probabilidad (%) · escala fija 0–{vmax:.1f}</div>'
+        '</div>',
+        unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -283,32 +291,20 @@ def main() -> None:
         st.error(f"No se pudieron cargar los datos: {exc}")
         st.stop()
 
-    rango, tipo = panel_filtros()
+    rango, modo, tipo = panel_filtros()
     desde = _parse(rango[0]); hasta = _parse(rango[1])
 
     # Mapa REAL: frecuencia relativa empírica del periodo/tipo seleccionados.
     superficie_real = _superficie_historica(desde, hasta, tipo)
     periodo_real = rango[0] if rango[0] == rango[1] else f"{rango[0]}→{rango[1]}"
-    etiqueta_real = f"Real · {periodo_real}" + (f" · {tipo}" if tipo else "")
 
-    # Mapa PREDICHO: estimación del modelo para el mes objetivo del periodo.
-    p0 = modelo.primer_mes_predecible()
-    objetivo = hasta if hasta >= p0 else p0
-    if objetivo != hasta:
-        st.info(
-            f"El modelo necesita al menos 1 año de historia previa. Se muestra la "
-            f"predicción para **{data_nuse.etiqueta(*objetivo)}** (primer mes predecible)."
-        )
-    superficie_pred = _superficie_predicha(*objetivo)
-    periodo_pred = data_nuse.etiqueta(*objetivo)
-
-    header(superficie_real, periodo_real, "Real + Predicho")
+    header(superficie_real, periodo_real, modo)
 
     if int(superficie_real["total_incidentes"].sum()) == 0:
         st.warning("No hay datos para la selección. Probá otro rango o tipo.")
         st.stop()
 
-    # Siniestros reales (capa opcional), acotados al periodo del mapa real.
+    # Siniestros reales (capa opcional), acotados al periodo.
     sin = _siniestros()
     y_ini, y_fin = max(desde[0], 2015), min(hasta[0], 2021)
     if not sin.empty and y_ini <= y_fin:
@@ -320,54 +316,73 @@ def main() -> None:
     vmax = mapa.escala_prob_max()
     loc = _localidad_base()
     geo_real = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_real)
-    geo_pred = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_pred)
     mapa_real = construir_mapa(geo_real, vmax, loc, sin_sel)
-    mapa_pred = construir_mapa(geo_pred, vmax, loc, sin_sel)
 
-    st.subheader("Superficie de probabilidad — real vs predicho")
-    mc1, mc2 = st.columns(2)
-    with mc1:
-        st.markdown(f"**Real (histórico)** · {periodo_real}" + (f" · {tipo}" if tipo else ""))
-        components.html(mapa_real._repr_html_(), height=520, scrolling=False)
-    with mc2:
-        st.markdown(f"**Predicho (modelo)** · {periodo_pred}")
-        components.html(mapa_pred._repr_html_(), height=520, scrolling=False)
-    if not sin_sel.empty:
+    if modo == "Predicho":
+        # Mapa PREDICHO: estimación del modelo para el mes objetivo.
+        p0 = modelo.primer_mes_predecible()
+        objetivo = hasta if hasta >= p0 else p0
+        if objetivo != hasta:
+            st.info(
+                f"El modelo necesita al menos 1 año de historia previa. Se muestra la "
+                f"predicción para **{data_nuse.etiqueta(*objetivo)}** (primer mes predecible)."
+            )
+        superficie_pred = _superficie_predicha(*objetivo)
+        periodo_pred = data_nuse.etiqueta(*objetivo)
+        geo_pred = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_pred)
+        mapa_pred = construir_mapa(geo_pred, vmax, loc, sin_sel)
+
+        st.subheader("Predicción — real vs predicho")
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.markdown(f"**Real (histórico)** · {periodo_real}" + (f" · {tipo}" if tipo else ""))
+            components.html(mapa_real._repr_html_(), height=520, scrolling=False)
+        with mc2:
+            st.markdown(f"**Predicho (modelo)** · {periodo_pred}")
+            components.html(mapa_pred._repr_html_(), height=520, scrolling=False)
+        leyenda(vmax)
+        if not sin_sel.empty:
+            st.caption(
+                f"Capa «Siniestros viales (puntos)»: **{len(sin_sel):,} puntos reales** "
+                f"georreferenciados ({y_ini}–{y_fin}), fuente SDM. Activala en el control de capas."
+            )
+
+        comp = mapa.comparacion_mes(*objetivo)
+        mae = float(comp["error"].abs().mean())
+        corr = float(comp["predicho"].corr(comp["real"]))
+        r1, r2 = st.columns(2)
+        with r1:
+            st.subheader(f"Predicho vs real — {periodo_pred}")
+            top = comp.head(12).set_index("nombre_upz")[["predicho", "real"]]
+            top.columns = ["Predicho", "Real"]
+            st.bar_chart(top, height=320, stack=False)
+        with r2:
+            st.subheader("Dispersión por UPZ (112)")
+            st.scatter_chart(comp, x="real", y="predicho", height=320)
         st.caption(
-            f"Capa «Siniestros viales (puntos)»: **{len(sin_sel):,} puntos reales** "
-            f"georreferenciados ({y_ini}–{y_fin}), fuente SDM. Activala en el control de capas."
+            f"MAE de {periodo_pred}: **{mae:,.1f}** incidentes por UPZ · "
+            f"correlación predicho-real: **{corr:.3f}**. Puntos sobre la diagonal = predicción perfecta."
         )
-    st.caption(
-        "El color codifica la probabilidad (%) en una escala fija, comparable entre ambos mapas. "
-        "Pasá el cursor sobre una UPZ para ver su detalle."
-    )
+    else:
+        st.subheader("Superficie de probabilidad — histórico")
+        components.html(mapa_real._repr_html_(), height=580, scrolling=False)
+        leyenda(vmax)
+        if not sin_sel.empty:
+            st.caption(
+                f"Capa «Siniestros viales (puntos)»: **{len(sin_sel):,} puntos reales** "
+                f"georreferenciados ({y_ini}–{y_fin}), fuente SDM. Activala en el control de capas."
+            )
+        col_top, col_tend = st.columns(2)
+        with col_top:
+            st.subheader("UPZ con mayor probabilidad")
+            st.bar_chart(mapa.top_upz(superficie_real, 10).set_index("nombre_upz")["prob_pct"], height=320)
+        with col_tend:
+            st.subheader("Incidentes por mes")
+            pm = data_nuse.cargar_por_mes().copy()
+            pm["fecha"] = pm["ANIO"].astype(str) + "-" + pm["MES"].astype(str).str.zfill(2)
+            st.bar_chart(pm.set_index("fecha")["total_incidentes"], height=320)
 
-    comp = mapa.comparacion_mes(*objetivo)
-    mae = float(comp["error"].abs().mean())
-    corr = float(comp["predicho"].corr(comp["real"]))
-    r1, r2 = st.columns(2)
-    with r1:
-        st.subheader("UPZ con mayor probabilidad (real)")
-        st.bar_chart(mapa.top_upz(superficie_real, 10).set_index("nombre_upz")["prob_pct"], height=320)
-    with r2:
-        st.subheader(f"Predicho vs real — {periodo_pred}")
-        top = comp.head(12).set_index("nombre_upz")[["predicho", "real"]]
-        top.columns = ["Predicho", "Real"]
-        st.bar_chart(top, height=320, stack=False)
-    r3, r4 = st.columns(2)
-    with r3:
-        st.subheader("Dispersión por UPZ (112)")
-        st.scatter_chart(comp, x="real", y="predicho", height=320)
-    with r4:
-        st.subheader("Incidentes por mes")
-        pm = data_nuse.cargar_por_mes().copy()
-        pm["fecha"] = pm["ANIO"].astype(str) + "-" + pm["MES"].astype(str).str.zfill(2)
-        st.bar_chart(pm.set_index("fecha")["total_incidentes"], height=320)
-    st.caption(
-        f"MAE de {periodo_pred}: **{mae:,.1f}** incidentes por UPZ · "
-        f"correlación predicho-real: **{corr:.3f}**. "
-        "Puntos sobre la diagonal = predicción perfecta."
-    )
+    st.caption("El color codifica la probabilidad (%) en una escala fija. Pasá el cursor sobre una UPZ para ver su detalle.")
 
     metrics = modelo.metricas_guardadas()
     if metrics:
