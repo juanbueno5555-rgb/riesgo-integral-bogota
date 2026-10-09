@@ -15,6 +15,7 @@ calibrada ni causal.
 
 from __future__ import annotations
 
+import base64
 import copy
 from pathlib import Path
 
@@ -96,10 +97,14 @@ def estilo_global() -> None:
 
 
 def inyectar_logo() -> None:
-    ruta = RAIZ / "assets" / "logo.svg"
+    ruta = RAIZ / "assets" / "logo_sentinel.jpeg"
     if ruta.exists():
-        st.markdown(f'<div style="text-align:center;padding:0.2rem 0;">{ruta.read_text(encoding="utf-8")}</div>',
-                    unsafe_allow_html=True)
+        b64 = base64.b64encode(ruta.read_bytes()).decode("ascii")
+        st.markdown(
+            '<div style="text-align:center;padding:0.2rem 0;">'
+            f'<img src="data:image/jpeg;base64,{b64}" alt="Sentinel" '
+            'style="width:100%;max-width:260px;border-radius:8px;"/></div>',
+            unsafe_allow_html=True)
 
 
 def sidebar() -> None:
