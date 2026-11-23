@@ -65,6 +65,14 @@ def superficie_predicha(anio: int, mes: int) -> pd.DataFrame:
     return _cerrar(_base_upz(), pred, col="predicho")
 
 
+def superficie_pronosticada(anio: int, mes: int) -> pd.DataFrame:
+    """Model forecast per UPZ for a month not yet published (no observations used)."""
+    import modelo
+
+    pred = modelo.pronosticar_futuro(anio, mes)
+    return _cerrar(_base_upz(), pred, col="predicho")
+
+
 def enriquecer_geojson(geo: dict, superficie: pd.DataFrame) -> dict:
     """Inject localidad / total / prob_pct / indice into each feature's properties."""
     valores = superficie.set_index("COD_UPZ").to_dict("index")

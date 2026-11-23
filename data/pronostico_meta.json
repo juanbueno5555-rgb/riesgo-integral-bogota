@@ -1,0 +1,321 @@
+{
+  "origen": "2026-09",
+  "generado": "2026-11-22T21:07:56",
+  "error_por_horizonte": [
+    {
+      "horizonte": 1,
+      "mae_upz": 165.43,
+      "wape_pct": 9.67,
+      "error_total_pct": 8.21,
+      "muestras": 3584
+    },
+    {
+      "horizonte": 2,
+      "mae_upz": 178.33,
+      "wape_pct": 10.4,
+      "error_total_pct": 8.6,
+      "muestras": 3472
+    },
+    {
+      "horizonte": 3,
+      "mae_upz": 188.14,
+      "wape_pct": 10.91,
+      "error_total_pct": 9.39,
+      "muestras": 3360
+    },
+    {
+      "horizonte": 4,
+      "mae_upz": 193.36,
+      "wape_pct": 11.06,
+      "error_total_pct": 8.69,
+      "muestras": 3248
+    },
+    {
+      "horizonte": 5,
+      "mae_upz": 202.84,
+      "wape_pct": 11.58,
+      "error_total_pct": 9.35,
+      "muestras": 3136
+    },
+    {
+      "horizonte": 6,
+      "mae_upz": 213.16,
+      "wape_pct": 12.15,
+      "error_total_pct": 9.96,
+      "muestras": 3024
+    },
+    {
+      "horizonte": 7,
+      "mae_upz": 222.88,
+      "wape_pct": 12.69,
+      "error_total_pct": 10.53,
+      "muestras": 2912
+    },
+    {
+      "horizonte": 8,
+      "mae_upz": 234.23,
+      "wape_pct": 13.29,
+      "error_total_pct": 10.9,
+      "muestras": 2800
+    },
+    {
+      "horizonte": 9,
+      "mae_upz": 240.95,
+      "wape_pct": 13.67,
+      "error_total_pct": 11.29,
+      "muestras": 2688
+    },
+    {
+      "horizonte": 10,
+      "mae_upz": 249.61,
+      "wape_pct": 14.16,
+      "error_total_pct": 11.68,
+      "muestras": 2576
+    },
+    {
+      "horizonte": 11,
+      "mae_upz": 259.32,
+      "wape_pct": 14.66,
+      "error_total_pct": 12.16,
+      "muestras": 2464
+    },
+    {
+      "horizonte": 12,
+      "mae_upz": 257.49,
+      "wape_pct": 14.64,
+      "error_total_pct": 12.21,
+      "muestras": 2352
+    },
+    {
+      "horizonte": 13,
+      "mae_upz": 277.57,
+      "wape_pct": 15.63,
+      "error_total_pct": 13.09,
+      "muestras": 2240
+    },
+    {
+      "horizonte": 14,
+      "mae_upz": 289.38,
+      "wape_pct": 16.2,
+      "error_total_pct": 13.5,
+      "muestras": 2128
+    },
+    {
+      "horizonte": 15,
+      "mae_upz": 293.52,
+      "wape_pct": 16.46,
+      "error_total_pct": 13.8,
+      "muestras": 2016
+    },
+    {
+      "horizonte": 16,
+      "mae_upz": 307.32,
+      "wape_pct": 17.17,
+      "error_total_pct": 14.44,
+      "muestras": 1904
+    },
+    {
+      "horizonte": 17,
+      "mae_upz": 317.02,
+      "wape_pct": 17.71,
+      "error_total_pct": 14.96,
+      "muestras": 1792
+    },
+    {
+      "horizonte": 18,
+      "mae_upz": 330.02,
+      "wape_pct": 18.41,
+      "error_total_pct": 15.8,
+      "muestras": 1680
+    },
+    {
+      "horizonte": 19,
+      "mae_upz": 341.19,
+      "wape_pct": 19.05,
+      "error_total_pct": 16.46,
+      "muestras": 1568
+    },
+    {
+      "horizonte": 20,
+      "mae_upz": 336.36,
+      "wape_pct": 18.85,
+      "error_total_pct": 16.29,
+      "muestras": 1456
+    },
+    {
+      "horizonte": 21,
+      "mae_upz": 334.38,
+      "wape_pct": 18.81,
+      "error_total_pct": 16.2,
+      "muestras": 1344
+    },
+    {
+      "horizonte": 22,
+      "mae_upz": 341.16,
+      "wape_pct": 19.28,
+      "error_total_pct": 16.66,
+      "muestras": 1232
+    },
+    {
+      "horizonte": 23,
+      "mae_upz": 335.07,
+      "wape_pct": 19.12,
+      "error_total_pct": 16.49,
+      "muestras": 1120
+    },
+    {
+      "horizonte": 24,
+      "mae_upz": 320.77,
+      "wape_pct": 18.71,
+      "error_total_pct": 16.43,
+      "muestras": 1008
+    }
+  ],
+  "pronostico": [
+    {
+      "mes": "2026-10",
+      "total_predicho": 198714,
+      "error_total_pct": 8.21,
+      "horizonte": 1
+    },
+    {
+      "mes": "2026-11",
+      "total_predicho": 202001,
+      "error_total_pct": 8.6,
+      "horizonte": 2
+    },
+    {
+      "mes": "2026-12",
+      "total_predicho": 215659,
+      "error_total_pct": 9.39,
+      "horizonte": 3
+    },
+    {
+      "mes": "2027-01",
+      "total_predicho": 171667,
+      "error_total_pct": 8.69,
+      "horizonte": 4
+    },
+    {
+      "mes": "2027-02",
+      "total_predicho": 169664,
+      "error_total_pct": 9.35,
+      "horizonte": 5
+    },
+    {
+      "mes": "2027-03",
+      "total_predicho": 193313,
+      "error_total_pct": 9.96,
+      "horizonte": 6
+    },
+    {
+      "mes": "2027-04",
+      "total_predicho": 198447,
+      "error_total_pct": 10.53,
+      "horizonte": 7
+    },
+    {
+      "mes": "2027-05",
+      "total_predicho": 203256,
+      "error_total_pct": 10.9,
+      "horizonte": 8
+    },
+    {
+      "mes": "2027-06",
+      "total_predicho": 193487,
+      "error_total_pct": 11.29,
+      "horizonte": 9
+    },
+    {
+      "mes": "2027-07",
+      "total_predicho": 188831,
+      "error_total_pct": 11.68,
+      "horizonte": 10
+    },
+    {
+      "mes": "2027-08",
+      "total_predicho": 177021,
+      "error_total_pct": 12.16,
+      "horizonte": 11
+    },
+    {
+      "mes": "2027-09",
+      "total_predicho": 184779,
+      "error_total_pct": 12.21,
+      "horizonte": 12
+    },
+    {
+      "mes": "2027-10",
+      "total_predicho": 192887,
+      "error_total_pct": 13.09,
+      "horizonte": 13
+    },
+    {
+      "mes": "2027-11",
+      "total_predicho": 193731,
+      "error_total_pct": 13.5,
+      "horizonte": 14
+    },
+    {
+      "mes": "2027-12",
+      "total_predicho": 205639,
+      "error_total_pct": 13.8,
+      "horizonte": 15
+    },
+    {
+      "mes": "2028-01",
+      "total_predicho": 164414,
+      "error_total_pct": 14.44,
+      "horizonte": 16
+    },
+    {
+      "mes": "2028-02",
+      "total_predicho": 160722,
+      "error_total_pct": 14.96,
+      "horizonte": 17
+    },
+    {
+      "mes": "2028-03",
+      "total_predicho": 181168,
+      "error_total_pct": 15.8,
+      "horizonte": 18
+    },
+    {
+      "mes": "2028-04",
+      "total_predicho": 189744,
+      "error_total_pct": 16.46,
+      "horizonte": 19
+    },
+    {
+      "mes": "2028-05",
+      "total_predicho": 196838,
+      "error_total_pct": 16.29,
+      "horizonte": 20
+    },
+    {
+      "mes": "2028-06",
+      "total_predicho": 189228,
+      "error_total_pct": 16.2,
+      "horizonte": 21
+    },
+    {
+      "mes": "2028-07",
+      "total_predicho": 186385,
+      "error_total_pct": 16.66,
+      "horizonte": 22
+    },
+    {
+      "mes": "2028-08",
+      "total_predicho": 173567,
+      "error_total_pct": 16.49,
+      "horizonte": 23
+    },
+    {
+      "mes": "2028-09",
+      "total_predicho": 181001,
+      "error_total_pct": 16.43,
+      "horizonte": 24
+    }
+  ],
+  "nota": "Modelo autorregresivo de un paso: h=1 es directo; h>1 encadena predicciones y el error crece con el horizonte."
+}

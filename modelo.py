@@ -4,7 +4,8 @@ Turns the descriptive (historical-frequency) map into a PREDICTIVE one. For each
 UPZ and target month t we predict the incident count using ONLY prior months
 (lag1, lag12, lag13, moving averages, month and year) -> no leakage.
 
-Models compared (temporal split: train <= 2023-12, test 2024-01..2025-12):
+Models compared (temporal split: train <= 2023-12, test from 2024-01 to the
+last month published in the aggregated data):
     - baseline_lag1  : previous month
     - baseline_blend : mean(previous month, same month last year)
     - gbm            : GradientBoostingRegressor
@@ -35,11 +36,37 @@ FEATURES = ["lag1", "lag12", "lag13", "ma3", "ma12", "MES", "ANIO"]
 TARGET = "incidentes"
 T_TRAIN_FIN = 2023 * 12 + 12      # through 2023-12
 T_TEST_INI = 2024 * 12 + 1        # 2024-01
-T_TEST_FIN = 2025 * 12 + 12       # 2025-12
+
+
+def _ultimo_mes_publicado() -> int | None:
+    """Last (year, month) published in the aggregated data, as a monthly index.
+
+    Derived from the tiny aggregated file so the window never goes stale: when
+    the raw CSV is refreshed and preparar_datos.py is re-run, the test window
+    follows automatically. Returns None when the aggregate does not exist yet.
+    """
+    ruta = DATA_DIR / "nuse_por_mes.csv"
+    if not ruta.exists():
+        return None
+    try:
+        m = pd.read_csv(ruta, encoding="utf-8-sig", usecols=["ANIO", "MES"])
+    except Exception:  # noqa: BLE001
+        return None
+    if m.empty:
+        return None
+    return int((m["ANIO"].astype(int) * 12 + m["MES"].astype(int)).max())
+
+
+T_TEST_FIN = _ultimo_mes_publicado() or 2025 * 12 + 12
 
 
 def _t(anio: int, mes: int) -> int:
     return int(anio) * 12 + int(mes)
+
+
+def _etiqueta(t: int) -> str:
+    """Month label for a monthly index, e.g. 2024*12+3 -> '2024-03'."""
+    return f"{(int(t) - 1) // 12}-{(int(t) - 1) % 12 + 1:02d}"
 
 
 def serie_mensual() -> pd.DataFrame:
@@ -87,8 +114,12 @@ def _metricas(y, y_pred) -> dict:
 
 def entrenar(guardar: bool = True) -> dict:
     panel = construir_panel()
+    # Cover every month present in the panel: a stale T_TEST_FIN would leave
+    # published months outside both train and test (orphans, neither learned
+    # nor evaluated).
+    t_fin = int(panel["t"].max())
     train = panel[panel["t"] <= T_TRAIN_FIN]
-    test = panel[(panel["t"] >= T_TEST_INI) & (panel["t"] <= T_TEST_FIN)]
+    test = panel[(panel["t"] >= T_TEST_INI) & (panel["t"] <= t_fin)]
     Xtr, ytr = train[FEATURES].to_numpy(), train[TARGET].to_numpy()
     Xte, yte = test[FEATURES].to_numpy(), test[TARGET].to_numpy()
 
@@ -125,7 +156,8 @@ def entrenar(guardar: bool = True) -> dict:
         META.write_text(json.dumps({
             "modelo": mejor, "features": FEATURES, "metricas": metricas,
             "mejora_vs_baseline_pct": mejora, "importancias": importancias,
-            "train": "hasta 2023-12", "test": "2024-01 .. 2025-12",
+            "train": f"hasta {_etiqueta(T_TRAIN_FIN)}",
+            "test": f"{_etiqueta(T_TEST_INI)} .. {_etiqueta(t_fin)}",
             "nota": "Split temporal mensual (sin fuga de futuro).",
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[modelo] guardado en {ARTEFACTO.name}")
@@ -157,6 +189,70 @@ def predecir_mes(anio: int, mes: int) -> pd.DataFrame:
     pred = fila["lag1"].to_numpy(dtype=float) if modelo is None else modelo.predict(fila[FEATURES].to_numpy())
     fila["predicho"] = np.clip(pred, 0, None)
     return fila[["COD_UPZ", "predicho"]]
+
+
+def features_para(t: int, vals: dict[int, float]) -> list[float]:
+    """Feature row for target month t, mirroring construir_panel (no leakage)."""
+    fila = {
+        "lag1": vals.get(t - 1, 0.0),
+        "lag12": vals.get(t - 12, 0.0),
+        "lag13": vals.get(t - 13, 0.0),
+        "ma3": float(np.mean([vals.get(t - k, 0.0) for k in (1, 2, 3)])),
+        "ma12": float(np.mean([vals.get(t - 12 - k, 0.0) for k in (0, 1, 2)])),
+        "MES": (t - 1) % 12 + 1,
+        "ANIO": (t - 1) // 12,
+    }
+    return [fila[f] for f in FEATURES]
+
+
+def ultimo_t_publicado() -> int:
+    """Monthly index of the last month present in the aggregated data."""
+    serie = serie_mensual()
+    return int((serie["ANIO"].astype(int) * 12 + serie["MES"].astype(int)).max())
+
+
+HORIZONTE_MAX = 24
+
+
+def pronosticar_futuro(anio: int, mes: int) -> pd.DataFrame:
+    """Per-UPZ forecast for a month not yet published (recursive, one step at a time).
+
+    The model is one-step autoregressive, so a month beyond the data is produced by
+    feeding earlier predictions back as history. Targets more than HORIZONTE_MAX
+    months ahead are refused: beyond that the error has not been measured.
+    """
+    artefacto = cargar_modelo()
+    t_obj = _t(anio, mes)
+    t_max = ultimo_t_publicado()
+    if t_obj <= t_max:
+        return predecir_mes(anio, mes)
+    if t_obj - t_max > HORIZONTE_MAX:
+        raise ValueError(
+            f"Horizonte de {t_obj - t_max} meses fuera del rango evaluado (max {HORIZONTE_MAX})."
+        )
+
+    serie = serie_mensual()
+    serie["t"] = serie["ANIO"].astype(int) * 12 + serie["MES"].astype(int)
+    upzs = sorted(serie["COD_UPZ"].unique())
+    vals = {u: dict(zip(g["t"].astype(int), g["total_incidentes"].astype(float)))
+            for u, g in serie.groupby("COD_UPZ")}
+    red = artefacto["modelo"]
+
+    for t in range(t_max + 1, t_obj + 1):
+        if red is None:
+            pred = np.array([vals[u].get(t - 1, 0.0) for u in upzs], dtype=float)
+        else:
+            X = np.array([features_para(t, vals[u]) for u in upzs], dtype=float)
+            pred = np.clip(red.predict(X), 0.0, None)
+        for u, p in zip(upzs, pred):
+            vals[u][t] = float(p)
+
+    return pd.DataFrame({"COD_UPZ": upzs, "predicho": [vals[u][t_obj] for u in upzs]})
+
+
+def horizonte(anio: int, mes: int) -> int:
+    """Months between the last published month and the requested one (0 = observed)."""
+    return max(0, _t(anio, mes) - ultimo_t_publicado())
 
 
 def primer_mes_predecible() -> tuple[int, int]:

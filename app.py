@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import json
 from pathlib import Path
 
 import branca.colormap as cm
@@ -24,7 +25,6 @@ import folium
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from folium.plugins import HeatMap
 
 import data_nuse
 import mapa
@@ -50,6 +50,40 @@ def _superficie_historica(desde: tuple[int, int], hasta: tuple[int, int], tipo: 
 @st.cache_data(show_spinner=False)
 def _superficie_predicha(anio: int, mes: int):
     return mapa.superficie_predicha(anio, mes)
+
+
+@st.cache_data(show_spinner=False)
+def _superficie_pronosticada(anio: int, mes: int):
+    return mapa.superficie_pronosticada(anio, mes)
+
+
+@st.cache_data(show_spinner=False)
+def _pronostico_meta() -> dict:
+    """Curva de error por horizonte y pronóstico mes a mes (artefacto del script)."""
+    ruta = RAIZ / "data" / "pronostico_meta.json"
+    if not ruta.exists():
+        return {}
+    return json.loads(ruta.read_text(encoding="utf-8"))
+
+
+def _tabla_pronostico(ini: int, fin: int) -> pd.DataFrame:
+    """Pronóstico de los meses [ini, fin] (la página actual) con su error esperado."""
+    meta = _pronostico_meta()
+    err = {c["horizonte"]: c for c in meta.get("error_por_horizonte", [])}
+    filas = []
+    for f in meta.get("pronostico", [])[ini - 1:fin]:
+        e = err.get(f["horizonte"], {})
+        filas.append({
+            "Mes": _nombre_desde(f["mes"]),
+            "Horizonte": f"h={f['horizonte']}",
+            "Total proyectado": f"{int(f['total_predicho']):,}",
+            "Error esperado": (f"±{f['error_total_pct']:.1f} %"
+                               if f.get("error_total_pct") is not None else "s/d"),
+            "Error por UPZ": (f"±{e['wape_pct']:.1f} %"
+                              if e.get("wape_pct") is not None else "s/d"),
+            "Casos": e.get("muestras", "-"),
+        })
+    return pd.DataFrame(filas)
 
 
 @st.cache_data(show_spinner=False)
@@ -158,21 +192,83 @@ def header(superficie, periodo_txt: str, modo: str) -> None:
 # Filters
 # ---------------------------------------------------------------------------
 
+MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
+         "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+POR_PAGINA = 12
+
+
+def _nombre_mes(anio: int, mes: int) -> str:
+    return f"{MESES[int(mes) - 1]} {int(anio)}"
+
+
+def _nombre_desde(etiqueta_txt: str) -> str:
+    a, m = etiqueta_txt.split("-")
+    return _nombre_mes(int(a), int(m))
+
+
+def _selector_futuro(t_ult: int) -> int:
+    """Paginación de meses futuros; devuelve el horizonte elegido (1..HORIZONTE_MAX)."""
+    total = modelo.HORIZONTE_MAX
+    paginas = (total + POR_PAGINA - 1) // POR_PAGINA
+    pagina = int(st.session_state.get("pagina_futuro", 0))
+    ini = pagina * POR_PAGINA + 1
+    fin = min(ini + POR_PAGINA - 1, total)
+
+    nav_prev, nav_info, nav_next = st.columns([1, 3, 1])
+    with nav_prev:
+        if st.button("◀ 12 meses", disabled=pagina == 0):
+            st.session_state["pagina_futuro"] = max(0, pagina - 1)
+            st.rerun()
+    with nav_info:
+        a, b = _nombre_mes(*_parse(modelo._etiqueta(t_ult + ini))), \
+            _nombre_mes(*_parse(modelo._etiqueta(t_ult + fin)))
+        st.markdown(
+            f"<div style='text-align:center;padding-top:8px'>"
+            f"<b>Página {pagina + 1} de {paginas}</b> · {a} — {b}</div>",
+            unsafe_allow_html=True)
+    with nav_next:
+        if st.button("12 meses ▶", disabled=fin >= total):
+            st.session_state["pagina_futuro"] = pagina + 1
+            st.rerun()
+
+    etiquetas = {_nombre_mes(*_parse(modelo._etiqueta(t_ult + k))): k
+                 for k in range(ini, fin + 1)}
+    sel = st.segmented_control("Mes a pronosticar", list(etiquetas),
+                               selection_mode="single")
+    return etiquetas.get(sel, ini)
+
+
 def panel_filtros():
-    etiquetas = [data_nuse.etiqueta(a, m) for a, m in data_nuse.periodos()]
+    publicados = [data_nuse.etiqueta(a, m) for a, m in data_nuse.periodos()]
+    t_ult = modelo.ultimo_t_publicado()
+    primer_pred = modelo.primer_mes_predecible()
+    predecibles = [e for e in publicados if _parse(e) >= primer_pred]
+
     c1, c2, c3 = st.columns([3, 1, 1])
-    with c1:
-        rango = st.select_slider("Línea de tiempo (meses)", options=etiquetas,
-                                 value=(etiquetas[0], etiquetas[-1]))
     with c3:
-        modo = st.radio("Vista", ["Histórico", "Predicho"], horizontal=False)
+        modo = st.radio("Vista", ["Histórico", "Predicho", "Predicho a futuro"],
+                        horizontal=False)
+
+    horizonte = 0
+    with c1:
+        if modo == "Histórico":
+            rango = st.select_slider("Rango acumulado (histórico)", options=publicados,
+                                     value=(publicados[0], publicados[-1]), key="rango_hist")
+        elif modo == "Predicho":
+            mes = st.select_slider("Mes a comparar (ya publicado)", options=predecibles,
+                                   value=predecibles[-1], key="mes_pred")
+            rango = (mes, mes)
+        else:
+            rango = (publicados[0], publicados[-1])
     with c2:
-        deshabilitado = modo == "Predicho"
+        deshabilitado = modo != "Histórico"
         tipo_sel = st.selectbox("Tipo de incidente", ["Todos"] + data_nuse.listar_tipos(),
                                 index=0, disabled=deshabilitado,
-                                help="El modo Predicho usa totales (sin filtro de tipo).")
+                                help="Las vistas de predicción usan totales (sin filtro de tipo).")
     tipo = None if (tipo_sel == "Todos" or deshabilitado) else tipo_sel
-    return rango, modo, tipo
+    if modo == "Predicho a futuro":
+        horizonte = _selector_futuro(t_ult)
+    return rango, modo, tipo, horizonte
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +295,11 @@ def _centroide(geom) -> tuple[float, float]:
 
 
 def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
-                   siniestros: pd.DataFrame | None = None) -> folium.Map:
+                   siniestros: pd.DataFrame | None = None,
+                   puntos_pred: pd.DataFrame | None = None) -> folium.Map:
     colormap = cm.linear.YlOrRd_09.scale(0, vmax)
     colormap.caption = f"Probabilidad (%) · escala fija 0–{vmax:.1f}"
-    mapa_f = folium.Map(location=[4.65, -74.10], zoom_start=11, tiles=None, control_scale=True)
+    mapa_f = folium.Map(location=[4.635, -74.115], zoom_start=11, tiles=None, control_scale=True)
 
     # --- Basemaps (seleccionables) ---
     folium.TileLayer(
@@ -245,17 +342,57 @@ def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
         ).add_to(nombres)
     nombres.add_to(mapa_f)
 
-    # --- Capa: siniestros viales georreferenciados (puntos reales, apagada) ---
+    # --- Capa: siniestros viales (densidad en rejilla, legible a cualquier zoom) ---
+    # Un heatmap se satura de lejos y se vuelve puntos sueltos de cerca; agregar a
+    # celdas de ~440 m y dibujar un círculo por celda mantiene la lectura estable.
     if siniestros is not None and not siniestros.empty:
-        calor = folium.FeatureGroup(name="Siniestros viales (puntos)", show=False)
-        HeatMap(
-            siniestros[["lat", "lon"]].to_numpy().tolist(),
-            radius=7, blur=9, min_opacity=0.25,
-            gradient={0.2: "#2E75B6", 0.5: "#FFEB3B", 0.8: "#C55A11", 1.0: "#C00000"},
-        ).add_to(calor)
-        calor.add_to(mapa_f)
+        capa = folium.FeatureGroup(name="Siniestros viales (puntos)", show=False)
+        celda = 0.004
+        rej = (siniestros.assign(
+                    lat_r=(siniestros["lat"] / celda).round() * celda,
+                    lon_r=(siniestros["lon"] / celda).round() * celda)
+                  .groupby(["lat_r", "lon_r"]).size().reset_index(name="n"))
+        nmax = float(rej["n"].max()) or 1.0
+        for _, r in rej.iterrows():
+            frac = (float(r["n"]) / nmax) ** 0.5
+            if frac > 0.66:
+                color, opac = "#C00000", 0.85
+            elif frac > 0.33:
+                color, opac = "#C55A11", 0.70
+            else:
+                color, opac = "#FFC107", 0.55
+            folium.CircleMarker(
+                location=[float(r["lat_r"]), float(r["lon_r"])],
+                radius=2.0 + 7.0 * frac,
+                color="#1F3864", weight=0.4,
+                fill=True, fillColor=color, fillOpacity=opac,
+                tooltip=f"{int(r['n'])} siniestros en la celda (~440 m)",
+            ).add_to(capa)
+        capa.add_to(mapa_f)
 
-    mapa_f.fit_bounds(_bounds(geo))
+    # --- Capa: puntos de predicción (uno por UPZ, tamaño por magnitud) ---
+    if puntos_pred is not None and not puntos_pred.empty:
+        puntos = folium.FeatureGroup(name="Puntos de predicción", show=True)
+        por_cod = {str(f["properties"].get("cod_upz", "")).strip().upper(): f["geometry"]
+                   for f in geo.get("features", [])}
+        vmax_p = float(puntos_pred["total_incidentes"].max()) or 1.0
+        for _, r in puntos_pred.iterrows():
+            geom = por_cod.get(str(r["COD_UPZ"]).strip().upper())
+            if geom is None:
+                continue
+            lat, lon = _centroide(geom)
+            val = float(r["total_incidentes"])
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=3 + 11 * (val / vmax_p) ** 0.5,
+                color="#FFD166", weight=0.8,
+                fill=True, fillColor="#FF8C42", fillOpacity=0.8,
+                tooltip=f"{r['nombre_upz']}: {val:,.0f} proyectados",
+            ).add_to(puntos)
+        puntos.add_to(mapa_f)
+
+    # Sin fit_bounds: se ejecuta antes de que el contenedor tenga su tamaño final
+    # y a veces encuadra lejos o deformado. El centro y el zoom son fijos.
     folium.LayerControl(collapsed=False).add_to(mapa_f)
     return mapa_f
 
@@ -291,7 +428,7 @@ def main() -> None:
         st.error(f"No se pudieron cargar los datos: {exc}")
         st.stop()
 
-    rango, modo, tipo = panel_filtros()
+    rango, modo, tipo, horizonte = panel_filtros()
     desde = _parse(rango[0]); hasta = _parse(rango[1])
 
     # Mapa REAL: frecuencia relativa empírica del periodo/tipo seleccionados.
@@ -309,7 +446,7 @@ def main() -> None:
     y_ini, y_fin = max(desde[0], 2015), min(hasta[0], 2021)
     if not sin.empty and y_ini <= y_fin:
         sub = sin[sin["anio"].between(y_ini, y_fin)]
-        sin_sel = sub.sample(min(len(sub), 30000), random_state=0) if len(sub) > 30000 else sub
+        sin_sel = sub.sample(min(len(sub), 15000), random_state=0) if len(sub) > 30000 else sub
     else:
         sin_sel = sin.iloc[0:0]
 
@@ -318,8 +455,50 @@ def main() -> None:
     geo_real = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_real)
     mapa_real = construir_mapa(geo_real, vmax, loc, sin_sel)
 
-    if modo == "Predicho":
-        # Mapa PREDICHO: estimación del modelo para el mes objetivo.
+    if modo == "Predicho a futuro":
+        t_ult = modelo.ultimo_t_publicado()
+        h = max(1, horizonte)
+        objetivo = _parse(modelo._etiqueta(t_ult + h))
+        periodo_pred = _nombre_mes(*objetivo)
+        superficie_pred = _superficie_pronosticada(*objetivo)
+        geo_pred = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_pred)
+        mapa_pred = construir_mapa(geo_pred, vmax, loc, sin_sel, puntos_pred=superficie_pred)
+        total_pred = int(superficie_pred["total_incidentes"].sum())
+
+        curva = {c["horizonte"]: c for c in _pronostico_meta().get("error_por_horizonte", [])}
+        err = curva.get(h)
+        st.warning(
+            f"**Pronóstico · {periodo_pred}** — {h} mes{'es' if h > 1 else ''} desde "
+            f"{modelo._etiqueta(t_ult)}. "
+            + (f"Error esperado del **total mensual: ±{err['error_total_pct']:.1f} %** · "
+               f"por UPZ ±{err['wape_pct']:.1f} % · medido sobre {err['muestras']} casos."
+               if err else "Error no medido para este horizonte.")
+        )
+
+        st.markdown(f"**Pronóstico (modelo)** · {periodo_pred}")
+        components.html(mapa_pred._repr_html_(), height=560, scrolling=False)
+        leyenda(vmax)
+
+        pagina = int(st.session_state.get("pagina_futuro", 0))
+        ini_pag = pagina * POR_PAGINA + 1
+        fin_pag = min(ini_pag + POR_PAGINA - 1, modelo.HORIZONTE_MAX)
+        st.subheader(f"Pronóstico mes a mes · {_nombre_desde(modelo._etiqueta(t_ult + ini_pag))}"
+                     f" — {_nombre_desde(modelo._etiqueta(t_ult + fin_pag))}")
+        st.dataframe(_tabla_pronostico(ini_pag, fin_pag), hide_index=True, width="stretch")
+
+        col_top, col_total = st.columns([2, 1])
+        with col_top:
+            st.subheader("UPZ con mayor incidencia proyectada")
+            st.bar_chart(
+                mapa.top_upz(superficie_pred, 10).set_index("nombre_upz")["prob_pct"],
+                height=320)
+        with col_total:
+            st.metric("Total proyectado", f"{total_pred:,}",
+                      help="Suma de las 112 UPZ para el mes seleccionado.")
+            st.caption("Los puntos del mapa son la predicción por UPZ. El error crece con el "
+                       "horizonte porque cada paso usa la predicción anterior como entrada.")
+
+    elif modo == "Predicho":
         p0 = modelo.primer_mes_predecible()
         objetivo = hasta if hasta >= p0 else p0
         if objetivo != hasta:
@@ -330,7 +509,7 @@ def main() -> None:
         superficie_pred = _superficie_predicha(*objetivo)
         periodo_pred = data_nuse.etiqueta(*objetivo)
         geo_pred = mapa.enriquecer_geojson(copy.deepcopy(_geojson_base()), superficie_pred)
-        mapa_pred = construir_mapa(geo_pred, vmax, loc, sin_sel)
+        mapa_pred = construir_mapa(geo_pred, vmax, loc, sin_sel, puntos_pred=superficie_pred)
 
         st.subheader("Predicción — real vs predicho")
         mc1, mc2 = st.columns(2)
@@ -343,8 +522,8 @@ def main() -> None:
         leyenda(vmax)
         if not sin_sel.empty:
             st.caption(
-                f"Capa «Siniestros viales (puntos)»: **{len(sin_sel):,} puntos reales** "
-                f"georreferenciados ({y_ini}–{y_fin}), fuente SDM. Activala en el control de capas."
+                f"Capa «Siniestros viales (puntos)»: {len(sin_sel):,} puntos reales "
+                f"({y_ini}-{y_fin}), fuente SDM. Activala en el control de capas."
             )
 
         comp = mapa.comparacion_mes(*objetivo)
@@ -363,6 +542,7 @@ def main() -> None:
             f"MAE de {periodo_pred}: **{mae:,.1f}** incidentes por UPZ · "
             f"correlación predicho-real: **{corr:.3f}**. Puntos sobre la diagonal = predicción perfecta."
         )
+
     else:
         st.subheader("Superficie de probabilidad — histórico")
         components.html(mapa_real._repr_html_(), height=580, scrolling=False)

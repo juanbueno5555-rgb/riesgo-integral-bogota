@@ -1,13 +1,13 @@
 {
   "fuente_datos": "C:\\Users\\RANGE\\Downloads\\Programacion-IA.Proyecto\\datos\\nuse_llamadas.csv",
   "fuente_geo": "C:\\Users\\RANGE\\Downloads\\Programacion-IA.Proyecto\\datos\\upz.geojson",
-  "generado": "2026-10-07T15:52:07",
+  "generado": "2026-11-22T16:49:18",
   "periodo": {
     "anio_min": 2015,
     "anio_max": 2026
   },
-  "filas_leidas": 971993,
-  "total_incidentes": 30118061,
+  "filas_leidas": 978678,
+  "total_incidentes": 30309414,
   "upz_con_datos": 112,
   "upz_en_geojson": 112,
   "reglas_filtro": {
