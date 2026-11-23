@@ -351,7 +351,7 @@ def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
         capa = folium.FeatureGroup(name="Siniestros viales (puntos)", show=False)
         HeatMap(
             siniestros[["lat", "lon"]].to_numpy().tolist(),
-            radius=12, blur=9, min_opacity=0.35,
+            radius=8, blur=5, min_opacity=0.05,
             gradient={0.2: "#2E75B6", 0.5: "#FFEB3B", 0.8: "#C55A11", 1.0: "#C00000"},
         ).add_to(capa)
         capa.add_to(mapa_f)
@@ -399,8 +399,8 @@ def _js_zoom_calor(nombre_mapa: str) -> str:
     var capa = buscar(map);
     if (!capa) {{ return false; }}
     var z = map.getZoom();
-    var radio = Math.max(3, Math.round(30 * Math.pow(0.55, Math.max(0, z - 9))));
-    capa.setOptions({{ radius: radio, blur: Math.round(radio * 0.8) }});
+    var radio = Math.min(34, Math.max(4, Math.round(7 * Math.pow(1.7, z - 11))));
+    capa.setOptions({{ radius: radio, blur: Math.round(radio * 0.6) }});
     return true;
   }}
   function iniciar() {{
