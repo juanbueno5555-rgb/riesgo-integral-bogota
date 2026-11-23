@@ -22,6 +22,7 @@ from pathlib import Path
 
 import branca.colormap as cm
 import folium
+from folium.plugins import HeatMap
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -342,32 +343,17 @@ def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
         ).add_to(nombres)
     nombres.add_to(mapa_f)
 
-    # --- Capa: siniestros viales (densidad en rejilla, legible a cualquier zoom) ---
-    # Un heatmap se satura de lejos y se vuelve puntos sueltos de cerca; agregar a
-    # celdas de ~440 m y dibujar un círculo por celda mantiene la lectura estable.
+    # --- Capa: siniestros viales (mapa de calor, apagada por defecto) ---
+    # leaflet.heat dibuja el radio en píxeles fijos: de lejos los puntos se funden
+    # en una mancha y de cerca se ven como motas. El script del final recalcula el
+    # radio en cada zoom para que la lectura se mantenga a cualquier escala.
     if siniestros is not None and not siniestros.empty:
         capa = folium.FeatureGroup(name="Siniestros viales (puntos)", show=False)
-        celda = 0.004
-        rej = (siniestros.assign(
-                    lat_r=(siniestros["lat"] / celda).round() * celda,
-                    lon_r=(siniestros["lon"] / celda).round() * celda)
-                  .groupby(["lat_r", "lon_r"]).size().reset_index(name="n"))
-        nmax = float(rej["n"].max()) or 1.0
-        for _, r in rej.iterrows():
-            frac = (float(r["n"]) / nmax) ** 0.5
-            if frac > 0.66:
-                color, opac = "#C00000", 0.85
-            elif frac > 0.33:
-                color, opac = "#C55A11", 0.70
-            else:
-                color, opac = "#FFC107", 0.55
-            folium.CircleMarker(
-                location=[float(r["lat_r"]), float(r["lon_r"])],
-                radius=2.0 + 7.0 * frac,
-                color="#1F3864", weight=0.4,
-                fill=True, fillColor=color, fillOpacity=opac,
-                tooltip=f"{int(r['n'])} siniestros en la celda (~440 m)",
-            ).add_to(capa)
+        HeatMap(
+            siniestros[["lat", "lon"]].to_numpy().tolist(),
+            radius=12, blur=9, min_opacity=0.35,
+            gradient={0.2: "#2E75B6", 0.5: "#FFEB3B", 0.8: "#C55A11", 1.0: "#C00000"},
+        ).add_to(capa)
         capa.add_to(mapa_f)
 
     # --- Capa: puntos de predicción (uno por UPZ, tamaño por magnitud) ---
@@ -393,8 +379,45 @@ def construir_mapa(geo: dict, vmax: float, localidad_geo: dict | None = None,
 
     # Sin fit_bounds: se ejecuta antes de que el contenedor tenga su tamaño final
     # y a veces encuadra lejos o deformado. El centro y el zoom son fijos.
+    mapa_f.get_root().html.add_child(folium.Element(_js_zoom_calor(mapa_f.get_name())))
     folium.LayerControl(collapsed=False).add_to(mapa_f)
     return mapa_f
+
+
+def _js_zoom_calor(nombre_mapa: str) -> str:
+    """Radio del heatmap en función del zoom (el nativo es fijo y se ve mal)."""
+    return f"""<script>
+(function () {{
+  var NAME = "{nombre_mapa}";
+  var intentos = 0;
+  function buscar(map) {{
+    var encontrado = null;
+    map.eachLayer(function (l) {{ if (l && l._heat) {{ encontrado = l; }} }});
+    return encontrado;
+  }}
+  function ajustar(map) {{
+    var capa = buscar(map);
+    if (!capa) {{ return false; }}
+    var z = map.getZoom();
+    var radio = Math.max(3, Math.round(30 * Math.pow(0.55, Math.max(0, z - 9))));
+    capa.setOptions({{ radius: radio, blur: Math.round(radio * 0.8) }});
+    return true;
+  }}
+  function iniciar() {{
+    var map = window[NAME];
+    if (!map) {{
+      if (intentos++ < 80) {{ setTimeout(iniciar, 100); }}
+      return;
+    }}
+    map.on("zoomend", function () {{ ajustar(map); }});
+    map.on("layeradd", function () {{ setTimeout(function () {{ ajustar(map); }}, 40); }});
+    ajustar(map);
+    if (!buscar(map) && intentos++ < 80) {{ setTimeout(iniciar, 100); }}
+  }}
+  if (document.readyState !== "loading") {{ setTimeout(iniciar, 0); }}
+  else {{ document.addEventListener("DOMContentLoaded", function () {{ setTimeout(iniciar, 0); }}); }}
+}})();
+</script>"""
 
 
 def leyenda(vmax: float) -> None:
